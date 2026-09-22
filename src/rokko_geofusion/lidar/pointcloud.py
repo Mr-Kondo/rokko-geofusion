@@ -119,7 +119,7 @@ def subsample_for_display(
 # ---------------------------------------------------------------------------
 # Writers
 # ---------------------------------------------------------------------------
-class _PointWriter:
+class PointWriter:
     """Streaming writer shared by the supported output formats."""
 
     def __init__(self, path: Path, fmt: str, crs: str, with_rgb: bool) -> None:
@@ -130,6 +130,7 @@ class _PointWriter:
         self.count = 0
         self._chunks_xyz: list[np.ndarray] = []
         self._chunks_rgb: list[np.ndarray] = []
+        self._chunks_class: list[np.ndarray] = []
         self._las_writer = None
         if fmt in {"laz", "las"}:
             self._open_las()
@@ -156,7 +157,13 @@ class _PointWriter:
             logger.warning("could not embed CRS %s in the LAS header: %s", self.crs, exc)
         self._las_writer = laspy.open(self.path, mode="w", header=header)
 
-    def write(self, xyz: np.ndarray, rgb: np.ndarray | None) -> None:
+    def write(
+        self,
+        xyz: np.ndarray,
+        rgb: np.ndarray | None = None,
+        classification: np.ndarray | None = None,
+    ) -> None:
+        """Append points. ``classification`` becomes the LAS classification byte."""
         if xyz.size == 0:
             return
         if self._las_writer is not None:
@@ -176,11 +183,16 @@ class _PointWriter:
                 record.red = rgb[:, 0].astype(np.uint16) * 257
                 record.green = rgb[:, 1].astype(np.uint16) * 257
                 record.blue = rgb[:, 2].astype(np.uint16) * 257
+            if classification is not None:
+                # Point formats 0-5 store the class in 5 bits (0-31).
+                record.classification = np.clip(classification, 0, 31).astype(np.uint8)
             self._las_writer.write_points(record)
         else:
             self._chunks_xyz.append(xyz.astype(np.float32))
             if rgb is not None:
                 self._chunks_rgb.append(rgb)
+            if classification is not None:
+                self._chunks_class.append(np.asarray(classification, dtype=np.uint8))
         self.count += xyz.shape[0]
 
     def close(self) -> None:
@@ -191,8 +203,11 @@ class _PointWriter:
                else np.empty((0, 3), np.float32))
         rgb = (np.concatenate(self._chunks_rgb) if self._chunks_rgb
                else np.empty((0, 3), np.uint8))
+        classification = (np.concatenate(self._chunks_class) if self._chunks_class
+                          else np.empty(0, np.uint8))
         if self.format == "npz":
-            np.savez_compressed(self.path, xyz=xyz, rgb=rgb, crs=np.array([self.crs]))
+            np.savez_compressed(self.path, xyz=xyz, rgb=rgb,
+                                classification=classification, crs=np.array([self.crs]))
         elif self.format == "parquet":
             import pandas as pd
 
@@ -200,6 +215,7 @@ class _PointWriter:
                 {"x": xyz[:, 0], "y": xyz[:, 1], "z": xyz[:, 2]}
                 | ({"red": rgb[:, 0], "green": rgb[:, 1], "blue": rgb[:, 2]}
                    if self.with_rgb and rgb.size else {})
+                | ({"classification": classification} if classification.size else {})
             )
             frame.to_parquet(self.path, index=False)
         else:  # pragma: no cover - pydantic restricts the literal
@@ -256,6 +272,30 @@ def read_point_cloud(
 # ---------------------------------------------------------------------------
 # Building
 # ---------------------------------------------------------------------------
+def read_point_cloud_classification(path: Path | str) -> np.ndarray | None:
+    """Read the per-point class of a fused cloud, when it carries one."""
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix in {".laz", ".las"}:
+        import laspy
+
+        with laspy.open(path) as reader:
+            las = reader.read()
+        return np.asarray(las.classification, dtype=np.uint8)
+    if suffix == ".npz":
+        payload = np.load(path)
+        values = payload.get("classification")
+        return values if values is not None and values.size else None
+    if suffix == ".parquet":
+        import pandas as pd
+
+        frame = pd.read_parquet(path)
+        if "classification" not in frame.columns:
+            return None
+        return frame["classification"].to_numpy(dtype=np.uint8)
+    raise UnsupportedError(f"unsupported point cloud file type: {path.name}")
+
+
 def choose_surface(
     config: Config, dem_path: Path | None, dsm_path: Path | None
 ) -> tuple[Path, str]:
@@ -343,7 +383,7 @@ def build_point_cloud(
         colorize, fmt,
     )
 
-    writer = _PointWriter(out_path, fmt, grid.crs, with_rgb=colorize)
+    writer = PointWriter(out_path, fmt, grid.crs, with_rgb=colorize)
     z_min, z_max = float("inf"), float("-inf")
     tiles = list(iter_tiles(grid, settings.chunk_size_m))
     dropped = 0

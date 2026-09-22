@@ -348,6 +348,26 @@ class FusionConfig(_Base):
     enabled: bool = True
     cell_size_m: float = Field(1.0, gt=0.0)
     thresholds: FusionThresholds = Field(default_factory=FusionThresholds)
+    #: Output vocabulary of the rule-based fusion. Index 0 is the fallback.
+    classes: list[str] = Field(
+        default_factory=lambda: [
+            "unknown",
+            "building",
+            "road",
+            "tall_vegetation",
+            "low_vegetation",
+            "bare_soil",
+            "water",
+            "other",
+        ]
+    )
+    #: Let mapped geometry (OSM) confirm or supply a class when the image
+    #: evidence is weak. Turn off to measure the image/LiDAR evidence alone.
+    use_gis_evidence: bool = True
+    #: Tile edge for the feature pass, in metres.
+    chunk_size_m: float = Field(500.0, gt=0.0)
+    #: Also write a LAZ cloud whose classification carries the fused class.
+    write_pointcloud: bool = True
 
 
 class PointCloudMlConfig(_Base):

@@ -186,9 +186,19 @@ segmentation:
   min_tile_px: 256
   classes: [other, building, road, vegetation, bare_soil, water]
 
+# -----------------------------------------------------------------------------
+# LiDAR x image x GIS fusion
+# One row per cell of a common grid, carrying geometry, colour, terrain, image
+# semantics and GIS attributes, plus a rule-based fused class. Rules that need
+# object height are skipped (and recorded as skipped) while no DSM exists.
+# -----------------------------------------------------------------------------
 fusion:
   enabled: true
   cell_size_m: 1.0
+  classes: [unknown, building, road, tall_vegetation, low_vegetation, bare_soil, water, other]
+  use_gis_evidence: true
+  chunk_size_m: 500.0
+  write_pointcloud: true
   thresholds:
     building_min_height_m: 2.5
     tall_vegetation_min_height_m: 3.0
