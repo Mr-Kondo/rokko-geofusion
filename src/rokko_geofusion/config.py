@@ -301,10 +301,23 @@ class TerrainConfig(_Base):
 
 class SegmentationConfig(_Base):
     enabled: bool = True
-    provider: Literal["segformer_ade", "none"] = "segformer_ade"
-    #: Any HF semantic-segmentation checkpoint; ADE20K models are trained on
-    #: ground-level photos, so aerial performance is a documented limitation.
-    model_id: str = "nvidia/segformer-b0-finetuned-ade-512-512"
+    provider: Literal["huggingface", "none"] = "huggingface"
+    #: Any HF semantic-segmentation checkpoint. The default is a SegFormer
+    #: fine-tuned on LoveDA (0.3 m aerial imagery, 7 land-cover classes), which
+    #: is in-domain for orthophotos. A general-purpose ADE20K checkpoint such
+    #: as `nvidia/segformer-b0-finetuned-ade-512-512` also works, but it is
+    #: trained on ground-level photography and performs far worse from nadir.
+    model_id: str = "IgorNer/segformer-b5-loveda"
+    #: Corrects a checkpoint whose published ``id2label`` does not match the
+    #: class indices its head actually learned. Keys are model class indices,
+    #: values are label names. Only ever set this from *measured* evidence --
+    #: `scripts/validate.py --check segmentation` scores the classes against
+    #: independent OSM geometry and prints the comparison.
+    label_overrides: dict[int, str] | None = None
+    #: Grid spacing of the class/confidence rasters. This is also the ground
+    #: sample distance the model actually sees, because each tile is resampled
+    #: to `tile_px` pixels covering `tile_px * output_resolution_m` metres.
+    output_resolution_m: float = Field(0.5, gt=0.0)
     tile_px: int = 512
     overlap_px: int = 64
     batch_size: int = 4

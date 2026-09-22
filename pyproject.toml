@@ -37,7 +37,7 @@ dependencies = [
 # Point cloud IO (LAZ/COPC). lazrs is a pure-rust backend -> no PDAL/GDAL needed.
 pointcloud = ["laspy[lazrs]>=2.5"]
 # Semantic segmentation + point cloud ML.
-ml = ["torch>=2.1", "transformers>=4.38", "scikit-learn>=1.3"]
+ml = ["torch>=2.1", "torchvision>=0.16", "transformers>=4.38", "scikit-learn>=1.3"]
 # VLM / LLM adapters (providers are optional and selected at runtime).
 ai = ["anthropic>=0.40"]
 # Visualisation for the Colab notebook.
