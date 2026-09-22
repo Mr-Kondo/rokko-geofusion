@@ -1,0 +1,24 @@
+# Pinned-by-floor requirement list for environments that cannot use
+# `pip install -e .[all]` (e.g. some Colab bootstrap cells).
+# Prefer `pip install -e ".[all]"`; this file mirrors pyproject.toml.
+numpy>=1.24
+scipy>=1.10
+pyyaml>=6.0
+pydantic>=2.5
+pyproj>=3.5
+shapely>=2.0
+rasterio>=1.3
+geopandas>=0.14
+pyogrio>=0.7
+pyarrow>=14.0
+pandas>=2.0
+requests>=2.31
+pillow>=10.0
+tqdm>=4.66
+laspy[lazrs]>=2.5
+torch>=2.1
+transformers>=4.38
+scikit-learn>=1.3
+matplotlib>=3.7
+plotly>=5.18
+folium>=0.15

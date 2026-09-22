@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rokko-geofusion"
+version = "0.1.0"
+description = "LiDAR x Aerial Imagery x GIS x GeoAI fusion pipeline (Rokko / Kobe University area by default)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "rokko-geofusion contributors" }]
+keywords = ["lidar", "gis", "remote-sensing", "point-cloud", "geoai"]
+
+# Core dependencies: config, CRS, raster, vector, point cloud, HTTP.
+# Kept deliberately small so that `import rokko_geofusion` works in a plain
+# Colab runtime; heavy ML/AI stacks live in optional extras.
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pyyaml>=6.0",
+    "pydantic>=2.5",
+    "pyproj>=3.5",
+    "shapely>=2.0",
+    "rasterio>=1.3",
+    "geopandas>=0.14",
+    "pyogrio>=0.7",
+    "pyarrow>=14.0",
+    "pandas>=2.0",
+    "requests>=2.31",
+    "pillow>=10.0",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+# Point cloud IO (LAZ/COPC). lazrs is a pure-rust backend -> no PDAL/GDAL needed.
+pointcloud = ["laspy[lazrs]>=2.5"]
+# Semantic segmentation + point cloud ML.
+ml = ["torch>=2.1", "transformers>=4.38", "scikit-learn>=1.3"]
+# VLM / LLM adapters (providers are optional and selected at runtime).
+ai = ["anthropic>=0.40"]
+# Visualisation for the Colab notebook.
+viz = ["matplotlib>=3.7", "plotly>=5.18", "folium>=0.15", "ipyleaflet>=0.18", "ipywidgets>=8.1"]
+dev = ["pytest>=7.4", "pytest-cov>=4.1", "ruff>=0.4"]
+all = ["rokko-geofusion[pointcloud,ml,ai,viz]"]
+
+[project.scripts]
+rokko-geofusion = "rokko_geofusion.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+rokko_geofusion = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "network: test requires outbound network access (deselect with '-m \"not network\"')",
+    "slow: test is slow",
+    "torch: test requires the optional torch stack",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+ignore = ["B008"]

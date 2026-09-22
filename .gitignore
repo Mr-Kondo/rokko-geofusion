@@ -1,0 +1,44 @@
+# --- Data and outputs are never version controlled -------------------------
+data/raw/*
+data/interim/*
+data/processed/*
+!data/**/.gitkeep
+outputs/*/*
+!outputs/**/.gitkeep
+
+# Local HTTP/tile cache
+.cache/
+*.laz
+*.las
+*.copc.laz
+*.tif
+*.tiff
+*.gpkg
+*.parquet
+*.npy
+*.npz
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Notebooks -------------------------------------------------------------
+.ipynb_checkpoints/
+
+# --- OS / editor -----------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+
+# --- Secrets ---------------------------------------------------------------
+.env
+*.key

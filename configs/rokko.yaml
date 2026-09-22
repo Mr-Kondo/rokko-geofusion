@@ -1,0 +1,202 @@
+# =============================================================================
+# rokko-geofusion -- default experiment configuration
+#
+# Target area: Kobe University Rokkodai campus and its surroundings.
+# Change `roi` (and nothing else) to analyse a different place.
+# Every URL, EPSG code, threshold and model id used by the pipeline is here;
+# none of them are hard-coded in src/.
+# =============================================================================
+
+project:
+  name: rokko_geofusion
+  seed: 42
+  data_root: data
+  output_root: outputs
+
+roi:
+  name: rokkodai
+  center:
+    lat: 34.7284
+    lon: 135.2348
+  radius_m: 1000        # square of side 2*radius_m in the projected CRS
+  # bbox: [min_lon, min_lat, max_lon, max_lat]   # alternative to center+radius
+
+crs:
+  geographic: EPSG:4326   # lat/lon, used for ROI definition and web maps
+  projected: EPSG:6673    # JGD2011 / Japan Plane Rectangular CS V (Hyogo)
+  tile: EPSG:3857         # CRS of the XYZ tile pyramids we download
+  output: null            # null -> same as `projected`
+
+# -----------------------------------------------------------------------------
+# Elevation (DEM / DSM)
+#
+# DEM: GSI elevation tiles. `dem5a` is the 5 m mesh (zoom 15) published as
+#      256x256 CSV grids of orthometric heights; `dem` is the 10 m DEM10B
+#      (zoom 14) used where 5 m coverage is missing. VERIFIED reachable.
+#
+# DSM: NOT configured by default. The project brief names the Hyogo prefecture
+#      high-accuracy 3D dataset, but no stable public download URL for it could
+#      be verified (a CKAN search of www.geospatial.jp returns no matching
+#      dataset). Rather than inventing a URL, the DSM provider stays "none":
+#      nDSM / object-height products are reported as UNAVAILABLE until you set
+#      one of the options below. See README "Data sources".
+#
+#      To enable DSM, either
+#        a) drop a file into data/raw and use provider: local_raster|local_xyz
+#        b) pin a CKAN resource URL you verified yourself (provider: ckan)
+# -----------------------------------------------------------------------------
+lidar:
+  resolution_m: 5.0       # target grid spacing in the projected CRS
+  dtype: float32
+  resampling: bilinear
+  nodata: -9999.0
+  is_true_lidar: false    # GSI tiles are a regular grid, NOT raw LiDAR returns
+  dem:
+    provider: gsi_tile    # gsi_tile | local_raster | local_xyz | ckan | none
+    gsi:
+      base_url: https://cyberjapandata.gsi.go.jp/xyz
+      dataset: dem5a
+      zoom: null          # null -> documented default zoom for the dataset
+      fallback_datasets: [dem]
+      nodata_token: "e"
+  dsm:
+    provider: none        # <- set me to enable nDSM / object height
+    local:
+      path: null          # e.g. data/raw/hyogo_dsm.tif
+      crs: null           # required for plain XYZ text files
+      grid_spacing_m: null
+    ckan:
+      catalog_url: https://www.geospatial.jp/ckan
+      search_query: null
+      dataset_id: null
+      resource_url: null
+
+# -----------------------------------------------------------------------------
+# Aerial imagery
+# `seamlessphoto` is the nationwide seamless photo mosaic (colour, z2-z18).
+# `ort` is orthorectified aerial photography; coverage and vintage vary and
+# some tiles are greyscale. Both VERIFIED reachable for this ROI.
+# At z18 and lat 34.73 the ground sample distance is ~0.49 m/px.
+# -----------------------------------------------------------------------------
+imagery:
+  provider: gsi_tile
+  base_url: https://cyberjapandata.gsi.go.jp/xyz
+  dataset: seamlessphoto
+  extension: jpg
+  zoom: 18
+  max_tiles: 4096
+  attribution: 国土地理院 (Geospatial Information Authority of Japan)
+
+# -----------------------------------------------------------------------------
+# GIS vector layers
+# Overpass rejects requests without a descriptive User-Agent (HTTP 406) and
+# rate-limits to a couple of concurrent slots -- responses are cached on disk.
+# -----------------------------------------------------------------------------
+gis:
+  providers: [osm]
+  osm:
+    endpoint: https://overpass-api.de/api/interpreter
+    mirrors: []
+    timeout_s: 180.0
+    max_retries: 3
+    user_agent: "rokko-geofusion/0.1 (academic research; contact: repository issues)"
+    layers: [building, road, water, landuse]
+    attribution: "(c) OpenStreetMap contributors, ODbL"
+  building_height_keys: [height, "building:height", "building:levels"]
+  metres_per_level: 3.0
+
+processing:
+  voxel_size_m: 1.0
+  tile_size_m: 250.0
+  dtype: float32
+  max_points_in_memory: 20000000
+  http:
+    timeout_s: 60.0
+    max_retries: 3
+    backoff_s: 1.5
+    user_agent: "rokko-geofusion/0.1 (research use; https://github.com/)"
+    cache_enabled: true
+    max_workers: 8
+    min_interval_s: 0.0
+
+terrain:
+  slope_units: degrees
+  relief_window_cells: 5
+  ndsm_clip_min_m: 0.0
+  ndsm_clip_max_m: 150.0
+  point_density_cell_m: 5.0
+
+# -----------------------------------------------------------------------------
+# Image semantic segmentation
+# The default checkpoint is trained on ADE20K (ground-level photographs), so
+# its accuracy on nadir aerial imagery is limited. This domain gap is recorded
+# in the output metadata and must be stated whenever results are reported.
+# -----------------------------------------------------------------------------
+segmentation:
+  enabled: true
+  provider: segformer_ade
+  model_id: nvidia/segformer-b0-finetuned-ade-512-512
+  tile_px: 512
+  overlap_px: 64
+  batch_size: 4
+  auto_downscale: true
+  min_tile_px: 256
+  classes: [other, building, road, vegetation, bare_soil, water]
+
+fusion:
+  enabled: true
+  cell_size_m: 1.0
+  thresholds:
+    building_min_height_m: 2.5
+    tall_vegetation_min_height_m: 3.0
+    road_max_height_m: 1.0
+    min_image_confidence: 0.35
+
+pointcloud_ml:
+  enabled: true
+  model: pointnet
+  num_points: 4096
+  tile_size_m: 50.0
+  batch_size: 8
+  epochs: 20
+  learning_rate: 0.001
+  embedding_dim: 256
+  n_clusters: 6
+  feature_sets: [xyz, xyz_rgb, xyz_rgb_terrain, xyz_rgb_terrain_semantic]
+
+vlm:
+  enabled: true
+  provider: anthropic       # anthropic | openai | hf_local | none
+  model: claude-opus-5
+  api_key_env: ANTHROPIC_API_KEY
+  max_images: 6
+  max_output_tokens: 2048
+  temperature: 0.0
+
+llm:
+  enabled: true
+  provider: anthropic
+  model: claude-opus-5
+  api_key_env: ANTHROPIC_API_KEY
+  max_output_tokens: 4096
+  temperature: 0.0
+  language: ja
+
+visualization:
+  max_display_points: 300000
+  figure_dpi: 150
+  basemap: https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png
+  basemap_attribution: 国土地理院
+
+output:
+  pointcloud_format: laz     # laz | las | parquet | npz
+  raster_dtype: float32
+  compress: deflate
+  overwrite: false
+  write_metadata_sidecar: true
+
+runtime:
+  device: auto               # auto | cuda | mps | cpu
+  num_workers: 2
+  allow_network: true
+  log_level: INFO
