@@ -216,6 +216,29 @@ def test_augment_preserves_shape_and_colour_range():
     assert not np.allclose(augmented[:, :3], points[:, :3])
 
 
+def test_feature_dropout_blanks_whole_non_geometry_channels():
+    """Without this, rotation-invariant channels make the contrastive task trivial."""
+    rng = np.random.default_rng(0)
+    points = np.ones((16, 10), np.float32)
+    points[:, :3] = rng.uniform(-1, 1, size=(16, 3))
+    views = [augment(points, rng, jitter=0.0, dropout=0.0, rotate=False,
+                     feature_dropout=1.0) for _ in range(3)]
+    for view in views:
+        assert np.allclose(view[:, 3:], 0.0), "every extra channel should be blanked"
+    kept = augment(points, rng, jitter=0.0, dropout=0.0, rotate=False,
+                   colour_jitter=0.0, feature_dropout=0.0)
+    assert np.allclose(kept[:, 3:], 1.0)
+
+
+def test_feature_dropout_leaves_geometry_alone():
+    rng = np.random.default_rng(1)
+    points = np.ones((8, 8), np.float32)
+    points[:, :3] = 0.5
+    view = augment(points, rng, jitter=0.0, dropout=0.0, rotate=False,
+                   feature_dropout=1.0)
+    assert np.allclose(view[:, :3], 0.5)
+
+
 def test_augment_rotation_preserves_radius():
     rng = np.random.default_rng(1)
     points = rng.uniform(-1, 1, size=(32, 3)).astype(np.float32)

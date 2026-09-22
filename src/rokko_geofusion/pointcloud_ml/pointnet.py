@@ -86,12 +86,20 @@ def nt_xent_loss(projection_a, projection_b, temperature: float = 0.1):
 
 
 def augment(points, rng, *, jitter: float = 0.01, dropout: float = 0.1,
-            colour_jitter: float = 0.05, rotate: bool = True):
+            colour_jitter: float = 0.05, rotate: bool = True,
+            feature_dropout: float = 0.25):
     """Random view of a tile: Z-rotation, jitter, point dropout, colour shift.
 
-    Only the first three channels are geometry; channel 3-5, when present, are
-    colour. Everything else is left untouched, because rotating a one-hot class
-    or a slope value would be meaningless.
+    Only the first three channels are geometry; channels 3-5, when present, are
+    colour. Rotating a one-hot class or a slope value would be meaningless, so
+    the remaining channels are instead perturbed by ``feature_dropout``: each
+    non-geometry channel is blanked in a view with that probability.
+
+    That step is not cosmetic. Channels such as slope or a class one-hot are
+    invariant to rotation and jitter, so without it the two views of a tile
+    stay trivially identifiable, the contrastive loss collapses towards zero,
+    and feature sets with more channels score *worse* on every downstream
+    metric purely as an artefact of the objective.
     """
     import numpy as np
 
@@ -110,6 +118,11 @@ def augment(points, rng, *, jitter: float = 0.01, dropout: float = 0.1,
     if channels >= 6 and colour_jitter > 0:
         shift = rng.normal(0.0, colour_jitter, size=(1, 3)).astype(out.dtype)
         out[:, 3:6] = np.clip(out[:, 3:6] + shift, 0.0, 1.0)
+
+    if feature_dropout > 0 and channels > 3:
+        blanked = rng.random(channels - 3) < feature_dropout
+        if blanked.any():
+            out[:, 3:][:, blanked] = 0.0
 
     if dropout > 0:
         keep = rng.random(n) >= dropout

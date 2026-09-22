@@ -181,7 +181,12 @@ def segment_imagery(
                 confidence_path=confidence_path,
                 grid=grid,
                 class_names=class_names,
-                statistics=metadata.get("class_fractions", {}),
+                # Same shape as a fresh run: a reused product must be
+                # indistinguishable downstream.
+                statistics={
+                    "class_fractions": metadata.get("class_fractions", {}),
+                    "mean_confidence": metadata.get("mean_confidence", {}),
+                },
                 metadata=metadata,
             )
 

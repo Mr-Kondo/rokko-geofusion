@@ -380,6 +380,12 @@ class PointCloudMlConfig(_Base):
     learning_rate: float = 1e-3
     embedding_dim: int = 256
     n_clusters: int = 6
+    #: Probability of blanking a whole non-geometry channel in one augmented
+    #: view. Without it, channels that are invariant to rotation and jitter
+    #: (slope, class one-hots) let the encoder identify a tile trivially, the
+    #: contrastive loss collapses, and the richer feature sets score *worse*
+    #: purely as an artefact of the objective.
+    augment_feature_dropout: float = Field(0.25, ge=0.0, le=0.9)
     #: Which feature sets to compare (project requirement A/B/C/D).
     feature_sets: list[Literal["xyz", "xyz_rgb", "xyz_rgb_terrain", "xyz_rgb_terrain_semantic"]] = (
         Field(default_factory=lambda: ["xyz", "xyz_rgb", "xyz_rgb_terrain",

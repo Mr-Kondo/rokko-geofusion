@@ -161,6 +161,10 @@ class FusionTileDataset:
 
         self.columns = {name: frame[name].to_numpy() for name in needed}
         self.fused_class = self.columns["fused_class"].astype(np.int64)
+        #: Voxel-downsampled point indices per tile. The voxel grid does not
+        #: change between epochs, so computing it once instead of on every
+        #: access is the difference between minutes and tens of minutes.
+        self._voxel_cache: dict[int, np.ndarray] = {}
         self._build_tiles()
 
     # -- tiling --------------------------------------------------------------
@@ -202,19 +206,29 @@ class FusionTileDataset:
     def __len__(self) -> int:
         return len(self.tiles)
 
-    def sample(self, index: int, *, rng: np.random.Generator | None = None) -> TileSample:
-        """Voxel-downsample a tile, then sample a fixed number of points."""
-        rng = rng or self.rng
+    def _voxel_indices(self, index: int) -> np.ndarray:
+        """Point indices of one tile after voxel downsampling (cached)."""
+        cached = self._voxel_cache.get(index)
+        if cached is not None:
+            return cached
         indices = self.tiles[index]
         xyz = np.stack(
             [self.columns["x"][indices], self.columns["y"][indices],
              self.columns["z"][indices]], axis=1
         )
-        voxel_size = float(self.config.processing.voxel_size_m)
-        kept_xyz, kept_indices = voxel_downsample(
-            xyz, voxel_size_m=voxel_size, attributes=indices[:, None]
+        _, kept = voxel_downsample(
+            xyz, voxel_size_m=float(self.config.processing.voxel_size_m),
+            attributes=indices[:, None],
         )
-        selected = kept_indices[:, 0] if kept_indices is not None else indices
+        selected = kept[:, 0] if kept is not None else indices
+        self._voxel_cache[index] = selected
+        return selected
+
+    def sample(self, index: int, *, rng: np.random.Generator | None = None) -> TileSample:
+        """Voxel-downsample a tile, then sample a fixed number of points."""
+        rng = rng or self.rng
+        indices = self.tiles[index]
+        selected = self._voxel_indices(index)
         available = int(selected.size)
 
         if available >= self.num_points:

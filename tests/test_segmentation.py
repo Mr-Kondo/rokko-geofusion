@@ -276,3 +276,21 @@ def test_rerun_is_reproducible(ortho_scene):
                              model=_StripeModel(config.segmentation.classes), overwrite=True)
     b, _ = read_raster(second.class_path, band=1)
     np.testing.assert_array_equal(a, b)
+
+
+def test_reused_product_has_the_same_statistics_shape(ortho_scene):
+    """A cached run must be indistinguishable from a fresh one downstream."""
+    from rokko_geofusion.environment import make_resource_profile
+
+    config, roi, path = ortho_scene
+    profile = make_resource_profile(config)
+    fresh = segment_imagery(config, roi, path, profile=profile,
+                            model=_StripeModel(config.segmentation.classes))
+    reused = segment_imagery(config, roi, path, profile=profile,
+                             model=_StripeModel(config.segmentation.classes))
+    assert set(reused.statistics) == set(fresh.statistics) == {
+        "class_fractions", "mean_confidence"
+    }
+    assert reused.statistics["class_fractions"] == pytest.approx(
+        fresh.statistics["class_fractions"]
+    )

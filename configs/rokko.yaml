@@ -215,6 +215,7 @@ pointcloud_ml:
   learning_rate: 0.001
   embedding_dim: 256
   n_clusters: 6
+  augment_feature_dropout: 0.25   # keeps the contrastive task non-trivial
   feature_sets: [xyz, xyz_rgb, xyz_rgb_terrain, xyz_rgb_terrain_semantic]
 
 vlm:

@@ -87,6 +87,7 @@ def train_feature_set(
     batch_size = max(2, min(profile.pc_batch_size or settings.batch_size, len(dataset)))
     in_channels = feature_dimension(feature_set, len(config.segmentation.classes))
 
+    feature_dropout = float(settings.augment_feature_dropout)
     torch.manual_seed(seed)
     model = build_pointnet(in_channels, embedding_dim=settings.embedding_dim).to(device)
     optimiser = torch.optim.Adam(model.parameters(), lr=settings.learning_rate)
@@ -103,8 +104,10 @@ def train_feature_set(
         for start in range(0, n_tiles - batch_size + 1, batch_size):
             indices = order[start:start + batch_size]
             raw = dataset.batch(indices, feature_set, rng=rng)
-            view_a = np.stack([augment(tile, rng) for tile in raw])
-            view_b = np.stack([augment(tile, rng) for tile in raw])
+            view_a = np.stack([augment(tile, rng, feature_dropout=feature_dropout)
+                               for tile in raw])
+            view_b = np.stack([augment(tile, rng, feature_dropout=feature_dropout)
+                               for tile in raw])
             tensor_a = torch.from_numpy(view_a).to(device)
             tensor_b = torch.from_numpy(view_b).to(device)
 
@@ -158,7 +161,7 @@ def train_feature_set(
         cluster_sizes={},
         train_seconds=train_seconds,
         device=device,
-        model=describe_model(model),
+        model={**describe_model(model), "augment_feature_dropout": feature_dropout},
     )
     return result, tile_embeddings
 
