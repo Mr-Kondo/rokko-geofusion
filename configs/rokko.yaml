@@ -219,7 +219,7 @@ pointcloud_ml:
 
 vlm:
   enabled: true
-  provider: anthropic       # anthropic | openai | hf_local | none
+  provider: anthropic       # anthropic | openai | none
   model: claude-opus-5
   api_key_env: ANTHROPIC_API_KEY
   max_images: 6

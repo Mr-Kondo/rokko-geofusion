@@ -389,7 +389,7 @@ class PointCloudMlConfig(_Base):
 
 class VlmConfig(_Base):
     enabled: bool = True
-    provider: Literal["anthropic", "openai", "hf_local", "none"] = "anthropic"
+    provider: Literal["anthropic", "openai", "none"] = "anthropic"
     model: str = "claude-opus-5"
     api_key_env: str = "ANTHROPIC_API_KEY"
     max_images: int = 6
@@ -399,7 +399,7 @@ class VlmConfig(_Base):
 
 class LlmConfig(_Base):
     enabled: bool = True
-    provider: Literal["anthropic", "openai", "hf_local", "none"] = "anthropic"
+    provider: Literal["anthropic", "openai", "none"] = "anthropic"
     model: str = "claude-opus-5"
     api_key_env: str = "ANTHROPIC_API_KEY"
     max_output_tokens: int = 4096
