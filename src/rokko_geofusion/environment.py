@@ -365,7 +365,8 @@ def _tier_for(env: EnvironmentInfo, device: str) -> str:
 
 _TIER_TABLE: dict[str, dict[str, int]] = {
     # tier      seg_tile  seg_batch  pc_points  pc_batch
-    "gpu-xl": {"seg_tile_px": 1024, "seg_batch_size": 16, "pc_num_points": 8192, "pc_batch_size": 32},
+    "gpu-xl": {"seg_tile_px": 1024, "seg_batch_size": 16, "pc_num_points": 8192,
+               "pc_batch_size": 32},
     "gpu-l": {"seg_tile_px": 768, "seg_batch_size": 8, "pc_num_points": 4096, "pc_batch_size": 16},
     "gpu-m": {"seg_tile_px": 512, "seg_batch_size": 4, "pc_num_points": 4096, "pc_batch_size": 8},
     "gpu-s": {"seg_tile_px": 512, "seg_batch_size": 2, "pc_num_points": 2048, "pc_batch_size": 4},

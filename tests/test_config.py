@@ -20,19 +20,44 @@ def test_default_config_loads(default_config_path):
 
 
 def test_no_epsg_codes_are_hardcoded_in_processing_modules(repo_root):
-    """EPSG codes must come from config, not from source files."""
+    """EPSG codes must come from config, not from literals in processing code.
+
+    Docstrings and comments may mention them (they are documentation);
+    ``config.py`` declares the defaults. Anything else is a hard-coded CRS.
+    """
+    import ast
+    import io
+    import tokenize
+
     offenders = []
-    for path in (repo_root / "src").rglob("*.py"):
-        text = path.read_text(encoding="utf-8")
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            if "EPSG:" not in line:
+    for path in sorted((repo_root / "src").rglob("*.py")):
+        if path.name == "config.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+
+        docstring_lines: set[int] = set()
+        tree = ast.parse(source, str(path))
+        for node in ast.walk(tree):
+            if not isinstance(
+                node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+            ):
                 continue
-            stripped = line.strip()
-            is_comment_or_doc = stripped.startswith("#") or stripped.startswith(("'", '"'))
-            # config.py holds the declared defaults; comments/docstrings are fine.
-            if path.name == "config.py" or is_comment_or_doc:
+            body = getattr(node, "body", None)
+            if not body:
                 continue
-            offenders.append(f"{path.relative_to(repo_root)}:{lineno}: {stripped}")
+            first = body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) \
+                    and isinstance(first.value.value, str):
+                docstring_lines.update(range(first.lineno, (first.end_lineno or first.lineno) + 1))
+
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type != tokenize.STRING or "EPSG:" not in token.string:
+                continue
+            if token.start[0] in docstring_lines:
+                continue
+            offenders.append(
+                f"{path.relative_to(repo_root)}:{token.start[0]}: {token.string.strip()}"
+            )
     assert not offenders, "hard-coded EPSG codes outside config.py:\n" + "\n".join(offenders)
 
 

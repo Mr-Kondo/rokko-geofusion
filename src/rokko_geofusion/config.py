@@ -191,6 +191,8 @@ class LidarConfig(_Base):
     resampling: Literal["nearest", "bilinear", "cubic"] = "bilinear"
     nodata: float = -9999.0
     is_true_lidar: bool = False
+    #: Safety limit on the number of elevation tiles one ROI may request.
+    max_tiles: int = 2048
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +206,10 @@ class ImageryConfig(_Base):
     dataset: Literal["seamlessphoto", "ort"] = "seamlessphoto"
     extension: Literal["jpg", "png"] = "jpg"
     zoom: int = Field(18, ge=1, le=21)
+    #: Target grid spacing in the projected CRS. Keep it close to the native
+    #: ground sample distance of `zoom` (z18 ~ 0.49 m at 35N) -- a much finer
+    #: value only interpolates, it does not add detail.
+    resolution_m: float = Field(0.5, gt=0.0)
     max_tiles: int = 4096
     local: LocalFileSourceConfig = Field(default_factory=LocalFileSourceConfig)
     attribution: str = "国土地理院 (Geospatial Information Authority of Japan)"
@@ -214,9 +220,17 @@ class ImageryConfig(_Base):
 # ---------------------------------------------------------------------------
 class OsmConfig(_Base):
     endpoint: str = "https://overpass-api.de/api/interpreter"
-    mirrors: list[str] = Field(default_factory=list)
+    mirrors: list[str] = Field(
+        default_factory=lambda: [
+            "https://lz4.overpass-api.de/api/interpreter",
+            "https://z.overpass-api.de/api/interpreter",
+        ]
+    )
     timeout_s: float = 180.0
     max_retries: int = 3
+    #: Overpass hands out query slots on a ~60 s cycle; retrying sooner just
+    #: burns the remaining slots, so this is much larger than the HTTP default.
+    backoff_s: float = 30.0
     #: Overpass rejects requests without a descriptive User-Agent (HTTP 406).
     user_agent: str = "rokko-geofusion/0.1 (academic research; contact: repository issues)"
     layers: list[Literal["building", "road", "water", "landuse", "railway"]] = Field(
