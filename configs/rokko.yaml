@@ -26,6 +26,7 @@ crs:
   projected: EPSG:6673    # JGD2011 / Japan Plane Rectangular CS V (Hyogo)
   tile: EPSG:3857         # CRS of the XYZ tile pyramids we download
   output: null            # null -> same as `projected`
+  grid_snap_m: 10.0       # common lattice: 0.5 m / 5 m grids nest exactly
 
 # -----------------------------------------------------------------------------
 # Elevation (DEM / DSM)
@@ -110,6 +111,20 @@ gis:
   building_height_keys: [height, "building:height", "building:levels"]
   metres_per_level: 3.0
 
+# -----------------------------------------------------------------------------
+# Derived point cloud
+# One point per grid cell: Z from the surface raster (DSM when configured,
+# otherwise DEM), RGB sampled from the orthophoto. This is a GRIDDED cloud
+# derived from a raster, not raw LiDAR returns -- the metadata says so.
+# -----------------------------------------------------------------------------
+pointcloud:
+  resolution_m: null      # null -> native elevation resolution (5 m here)
+  surface: auto           # auto | dsm | dem
+  colorize: true
+  chunk_size_m: 500.0
+  rgb_sampling: nearest
+  max_points: 40000000
+
 processing:
   voxel_size_m: 1.0
   tile_size_m: 250.0
@@ -188,7 +203,7 @@ llm:
   language: ja
 
 visualization:
-  max_display_points: 300000
+  max_display_points: 100000   # ~120 bytes/point in a plotly HTML cell
   figure_dpi: 150
   basemap: https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png
   basemap_attribution: 国土地理院

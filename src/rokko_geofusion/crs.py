@@ -131,21 +131,34 @@ class CrsManager:
 # ---------------------------------------------------------------------------
 # ROI
 # ---------------------------------------------------------------------------
-def snap_bounds(bounds: Bounds, resolution: float) -> Bounds:
-    """Expand ``bounds`` outwards to whole multiples of ``resolution``.
+def snap_bounds(bounds: Bounds, resolution: float, snap_m: float | None = None) -> Bounds:
+    """Expand ``bounds`` outwards onto a shared lattice.
 
     Snapping to the CRS origin is what makes independently produced rasters
-    (DEM today, DSM tomorrow) share one grid.
+    (DEM today, DSM tomorrow) share one grid. Snapping to a *common* step
+    ``snap_m`` -- rather than to each product's own resolution -- additionally
+    makes grids of different resolutions **nest**: a 0.5 m orthophoto then
+    covers every cell centre of a 5 m DEM, including the ones on the east and
+    south edges. Without it, the coarse grid sticks out past the fine one and
+    edge points silently sample nothing.
+
+    ``snap_m`` should be a multiple of every resolution in use; when it is not,
+    the extent is extended by up to one cell so the cell count stays integral.
     """
     if resolution <= 0:
         raise ValueError("resolution must be positive")
+    base = snap_m if snap_m and snap_m > 0 else resolution
     min_x, min_y, max_x, max_y = bounds
-    return (
-        math.floor(min_x / resolution) * resolution,
-        math.floor(min_y / resolution) * resolution,
-        math.ceil(max_x / resolution) * resolution,
-        math.ceil(max_y / resolution) * resolution,
-    )
+    min_x = math.floor(min_x / base) * base
+    min_y = math.floor(min_y / base) * base
+    max_x = math.ceil(max_x / base) * base
+    max_y = math.ceil(max_y / base) * base
+
+    # Guarantee a whole number of cells even when `base` is not a multiple of
+    # `resolution`; growing outwards is always safe.
+    n_x = math.ceil(round((max_x - min_x) / resolution, 9))
+    n_y = math.ceil(round((max_y - min_y) / resolution, 9))
+    return (min_x, min_y, min_x + n_x * resolution, min_y + n_y * resolution)
 
 
 @dataclass(frozen=True)
@@ -211,10 +224,14 @@ class RoiGeometry:
     bounds_geographic: Bounds
     center_geographic: tuple[float, float]
     center_projected: tuple[float, float]
+    #: Common lattice step every derived grid snaps to (see :func:`snap_bounds`).
+    grid_snap_m: float = 10.0
 
     # -- construction --------------------------------------------------------
     @classmethod
-    def from_config(cls, roi: RoiConfig, crs: CrsManager) -> RoiGeometry:
+    def from_config(
+        cls, roi: RoiConfig, crs: CrsManager, *, grid_snap_m: float = 10.0
+    ) -> RoiGeometry:
         if roi.center is not None:
             cx, cy = crs.geographic_to_projected(roi.center.lon, roi.center.lat)
             radius = float(roi.radius_m)
@@ -243,6 +260,7 @@ class RoiGeometry:
             bounds_geographic=tuple(float(v) for v in bounds_geographic),  # type: ignore[arg-type]
             center_geographic=(float(center_geographic[0]), float(center_geographic[1])),
             center_projected=(float(cx), float(cy)),
+            grid_snap_m=float(grid_snap_m),
         )
 
     # -- derived -------------------------------------------------------------
@@ -288,12 +306,16 @@ class RoiGeometry:
             ),
             center_geographic=self.center_geographic,
             center_projected=self.center_projected,
+            grid_snap_m=self.grid_snap_m,
         )
 
     def grid(self, resolution_m: float) -> GridSpec:
-        """The canonical analysis grid for this ROI at ``resolution_m``."""
+        """The canonical analysis grid for this ROI at ``resolution_m``.
+
+        All resolutions share one outer extent, so grids nest exactly.
+        """
         return GridSpec(
-            bounds=snap_bounds(self.bounds_projected, resolution_m),
+            bounds=snap_bounds(self.bounds_projected, resolution_m, self.grid_snap_m),
             resolution_m=float(resolution_m),
             crs=self.crs.projected,
         )
@@ -326,7 +348,9 @@ class RoiGeometry:
 
 def roi_from_config(config: Any) -> RoiGeometry:
     """Convenience: build the ROI geometry straight from a :class:`Config`."""
-    return RoiGeometry.from_config(config.roi, CrsManager(config.crs))
+    return RoiGeometry.from_config(
+        config.roi, CrsManager(config.crs), grid_snap_m=config.crs.grid_snap_m
+    )
 
 
 def densify_bounds(bounds: Bounds, steps: int = 20) -> Iterable[tuple[float, float]]:

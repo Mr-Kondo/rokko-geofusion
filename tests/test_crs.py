@@ -185,6 +185,34 @@ def test_snap_bounds_lands_on_multiples_and_never_shrinks(resolution):
     assert snapped[2] >= bounds[2] and snapped[3] >= bounds[3]
 
 
+@pytest.mark.parametrize("resolution", [0.5, 1.0, 2.0, 5.0])
+def test_common_snap_makes_grids_of_every_resolution_identical_in_extent(resolution):
+    bounds = (81557.18, -141696.44, 83557.18, -139696.44)
+    snapped = snap_bounds(bounds, resolution, 10.0)
+    assert snapped == snap_bounds(bounds, 10.0, 10.0)
+    cells = (snapped[2] - snapped[0]) / resolution
+    assert cells == pytest.approx(round(cells))
+
+
+def test_snap_bounds_keeps_cell_count_integral_for_awkward_resolutions():
+    # 10 / 3 is not integral: the extent grows by less than one cell.
+    snapped = snap_bounds((0.0, 0.0, 100.0, 100.0), 3.0, 10.0)
+    assert snapped[0] == 0.0
+    width = (snapped[2] - snapped[0]) / 3.0
+    assert width == pytest.approx(round(width))
+    assert snapped[2] >= 100.0
+
+
+def test_nested_grids_cover_every_coarse_cell_centre(roi):
+    """The bug V5 caught: 5 m cell centres falling outside the 0.5 m ortho."""
+    coarse = roi.grid(5.0)
+    fine = roi.grid(0.5)
+    assert coarse.bounds == fine.bounds
+    xs, ys = coarse.cell_centers()
+    assert fine.bounds[0] < xs.min() and xs.max() < fine.bounds[2]
+    assert fine.bounds[1] < ys.min() and ys.max() < fine.bounds[3]
+
+
 def test_grid_shape_and_transform_are_consistent(roi):
     grid = roi.grid(5.0)
     assert grid.shape == (grid.height, grid.width)

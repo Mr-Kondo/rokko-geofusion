@@ -95,6 +95,11 @@ class CrsConfig(_Base):
     tile: str = "EPSG:3857"
     #: CRS written to output files; defaults to ``projected`` when omitted.
     output: str | None = None
+    #: Common lattice step (metres) every derived grid snaps to. Keep it a
+    #: multiple of every resolution in use so that grids of different
+    #: resolutions nest exactly -- otherwise a coarse grid's edge cells fall
+    #: outside a finer product and sample nothing.
+    grid_snap_m: float = Field(10.0, gt=0.0)
 
     @property
     def effective_output(self) -> str:
@@ -253,6 +258,28 @@ class GisConfig(_Base):
 # ---------------------------------------------------------------------------
 # Processing / terrain / segmentation / fusion / ML / AI
 # ---------------------------------------------------------------------------
+class PointCloudConfig(_Base):
+    """How the XYZ(+RGB) cloud is derived from the elevation rasters.
+
+    The cloud is a *derived* product: one point per cell of the target grid,
+    taking Z from the surface raster (DSM when available, otherwise DEM) and
+    RGB from the orthophoto. It is therefore a gridded cloud, not raw LiDAR --
+    ``is_true_lidar`` in the metadata always says which.
+    """
+
+    #: ``None`` -> use the native resolution of the elevation raster. A finer
+    #: value interpolates; it does not add measured detail.
+    resolution_m: float | None = None
+    surface: Literal["auto", "dsm", "dem"] = "auto"
+    colorize: bool = True
+    #: Tile edge used when generating and colourising, in metres.
+    chunk_size_m: float = Field(500.0, gt=0.0)
+    rgb_sampling: Literal["nearest", "bilinear"] = "nearest"
+    #: Refuse to generate more points than this (guards against a fine
+    #: resolution on a large ROI).
+    max_points: int = 40_000_000
+
+
 class ProcessingConfig(_Base):
     voxel_size_m: float = Field(1.0, gt=0.0)
     tile_size_m: float = Field(250.0, gt=0.0)
@@ -349,7 +376,9 @@ class LlmConfig(_Base):
 
 class VisualizationConfig(_Base):
     #: Points streamed to a browser widget; the analysis cloud stays on disk.
-    max_display_points: int = 300_000
+    #: A plotly HTML scatter costs ~120 bytes per point, so 100k points is
+    #: already a ~12 MB output cell -- raise this only for small ROIs.
+    max_display_points: int = 100_000
     figure_dpi: int = 150
     basemap: str = "https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png"
     basemap_attribution: str = "国土地理院"
@@ -387,6 +416,7 @@ class Config(_Base):
     lidar: LidarConfig = Field(default_factory=LidarConfig)
     imagery: ImageryConfig = Field(default_factory=ImageryConfig)
     gis: GisConfig = Field(default_factory=GisConfig)
+    pointcloud: PointCloudConfig = Field(default_factory=PointCloudConfig)
     processing: ProcessingConfig = Field(default_factory=ProcessingConfig)
     terrain: TerrainConfig = Field(default_factory=TerrainConfig)
     segmentation: SegmentationConfig = Field(default_factory=SegmentationConfig)
