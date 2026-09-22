@@ -198,7 +198,7 @@ def fetch_imagery(
     )
 
     if imagery.provider == "local_raster":
-        rgb, valid_mask, info = _load_local_imagery(config, imagery.local.path or "", grid)
+        rgb, valid_mask, acquisition = _load_local_imagery(config, imagery.local.path or "", grid)
     elif imagery.provider == "gsi_tile":
         padded = roi.buffered(3 * imagery.resolution_m)
         tile_range = tile_range_for_geographic_bounds(padded.bounds_geographic, imagery.zoom)
@@ -238,7 +238,7 @@ def fetch_imagery(
             valid.astype(np.uint8), src_transform=transform, src_crs=config.crs.tile,
             grid=grid, resampling="nearest", dst_nodata=0, dtype=np.uint8,
         ).astype(bool)
-        info = {
+        acquisition = {
             "provider": "gsi_tile",
             "dataset": imagery.dataset,
             "zoom": imagery.zoom,
@@ -259,7 +259,7 @@ def fetch_imagery(
         crs=grid.crs,
         resolution_m=grid.resolution_m,
         roi=roi.to_dict(),
-        acquisition=info,
+        acquisition=acquisition,
         processing={
             "resampling": "bilinear",
             "tile_crs": config.crs.tile,

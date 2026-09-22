@@ -30,7 +30,7 @@ from rokko_geofusion.fusion.rules import FusionInputs, apply_rules, class_fracti
 from rokko_geofusion.imagery.sampler import sample_raster, sample_rgb
 from rokko_geofusion.io.raster import write_grid_raster
 from rokko_geofusion.lidar.pointcloud import cell_centers_in, iter_tiles
-from rokko_geofusion.utils.metadata import build_metadata
+from rokko_geofusion.utils.metadata import build_metadata, write_sidecar
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +123,9 @@ def _mask_values(mask: np.ndarray | None, grid: GridSpec,
         return None
     cols = np.floor((x - grid.bounds[0]) / grid.resolution_m).astype(np.int64)
     rows = np.floor((grid.bounds[3] - y) / grid.resolution_m).astype(np.int64)
+    # Cell centres are inside the grid by construction; the clip is here
+    # because a negative index would wrap silently to the far edge instead of
+    # failing, which would be a very quiet spatial bug.
     np.clip(cols, 0, grid.width - 1, out=cols)
     np.clip(rows, 0, grid.height - 1, out=rows)
     return mask[rows, cols]
@@ -246,20 +249,64 @@ def build_fusion(
     for condition in skipped_conditions:
         logger.warning("fusion rule condition NOT applied: %s", condition)
 
+    statistics, metadata = _summarise_fusion(
+        config, roi, grid,
+        fused_raster=fused_raster,
+        n_rows=n_rows,
+        sources=sources,
+        rule_counts=provenance_total,
+        skipped_conditions=skipped_conditions,
+        unavailable=unavailable,
+    )
+    fractions = statistics["class_fractions"]
+    write_grid_raster(raster_path, fused_raster, grid, nodata=None,
+                      compress=config.output.compress,
+                      band_descriptions=["fused_class"], metadata=metadata)
+    write_sidecar(table_path, metadata)
+    logger.info("fused classes: %s",
+                ", ".join(f"{name}={value:.1%}" for name, value in fractions.items() if value))
+
+    return FusionProduct(
+        table_path=table_path,
+        raster_path=raster_path,
+        grid=grid,
+        class_names=class_names,
+        n_cells=n_rows,
+        statistics=statistics,
+        unavailable=unavailable,
+        metadata=metadata,
+        pointcloud_path=cloud_path,
+    )
+
+
+def _summarise_fusion(
+    config: Config,
+    roi: RoiGeometry,
+    grid: GridSpec,
+    *,
+    fused_raster: np.ndarray,
+    n_rows: int,
+    sources: dict[str, Path | None],
+    rule_counts: dict[str, int],
+    skipped_conditions: list[str],
+    unavailable: dict[str, str],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Statistics and metadata for a completed fusion pass."""
+    settings = config.fusion
+    class_names = list(settings.classes)
     fractions = class_fractions(fused_raster.ravel(), class_names)
     statistics = {
         "cells": int(n_rows),
         "cell_size_m": grid.resolution_m,
         "area_m2": float(n_rows * grid.resolution_m**2),
         "class_fractions": fractions,
-        "rule_counts": provenance_total,
+        "rule_counts": rule_counts,
         "skipped_conditions": skipped_conditions,
         "modalities": {
             name: ("available" if path else "unavailable")
             for name, path in sources.items()
         },
     }
-
     metadata = build_metadata(
         kind="fusion",
         source="fusion:" + "+".join(sorted(k for k, v in sources.items() if v)),
@@ -278,33 +325,14 @@ def build_fusion(
         config_fingerprint=config.fingerprint(),
         class_names=class_names,
         class_fractions=fractions,
-        rule_counts=provenance_total,
+        rule_counts=rule_counts,
         unavailable=unavailable,
         notes=(
             "Rule-based fusion of image semantics, terrain and mapped geometry. "
             "Each cell records the rule that assigned it."
         ),
     )
-    write_grid_raster(raster_path, fused_raster, grid, nodata=None,
-                      compress=config.output.compress,
-                      band_descriptions=["fused_class"], metadata=metadata)
-    from rokko_geofusion.utils.metadata import write_sidecar
-
-    write_sidecar(table_path, metadata)
-    logger.info("fused classes: %s",
-                ", ".join(f"{name}={value:.1%}" for name, value in fractions.items() if value))
-
-    return FusionProduct(
-        table_path=table_path,
-        raster_path=raster_path,
-        grid=grid,
-        class_names=class_names,
-        n_cells=n_rows,
-        statistics=statistics,
-        unavailable=unavailable,
-        metadata=metadata,
-        pointcloud_path=cloud_path,
-    )
+    return statistics, metadata
 
 
 def _fuse_tile(
@@ -324,35 +352,31 @@ def _fuse_tile(
 
     crs = grid.crs
 
-    def sample(name: str, method: str = "bilinear", band: int = 1) -> np.ndarray:
+    def sample_at(points_x, points_y, name, method="bilinear"):
+        """Sample one source at the given coordinates; NaN when it is absent."""
         path = sources.get(name)
         if path is None:
-            return np.full(x.size, np.nan, np.float32)
-        return sample_raster(path, x, y, expected_crs=crs, bands=[band],
+            return np.full(points_x.size, np.nan, np.float32)
+        return sample_raster(path, points_x, points_y, expected_crs=crs, bands=[1],
                              method=method)[0].astype(np.float32)
 
-    elevation = sample("dem")
+    # Cells without ground elevation carry no usable feature vector, so they
+    # are dropped before every other modality is sampled.
+    elevation = sample_at(x, y, "dem")
     valid = np.isfinite(elevation)
     if not valid.any():
         return None, None, None, None
     x, y, elevation = x[valid], y[valid], elevation[valid]
 
-    def resample(name: str, method: str = "bilinear", band: int = 1) -> np.ndarray:
-        path = sources.get(name)
-        if path is None:
-            return np.full(x.size, np.nan, np.float32)
-        return sample_raster(path, x, y, expected_crs=crs, bands=[band],
-                             method=method)[0].astype(np.float32)
-
     rgb = (sample_rgb(sources["orthophoto"], x, y, expected_crs=crs, method="nearest")
            if sources["orthophoto"] else np.zeros((x.size, 3), np.uint8))
 
-    object_height = resample("ndsm")
-    slope = resample("slope")
-    aspect = resample("aspect", method="nearest")
-    relief = resample("relief")
-    image_class = resample("segmentation_class", method="nearest")
-    image_confidence = resample("segmentation_confidence", method="bilinear")
+    object_height = sample_at(x, y, "ndsm")
+    slope = sample_at(x, y, "slope")
+    aspect = sample_at(x, y, "aspect", "nearest")
+    relief = sample_at(x, y, "relief")
+    image_class = sample_at(x, y, "segmentation_class", "nearest")
+    image_confidence = sample_at(x, y, "segmentation_confidence")
 
     image_class_index = np.where(np.isfinite(image_class), image_class, -1).astype(np.int16)
     image_confidence = np.where(np.isfinite(image_confidence), image_confidence, 0.0)

@@ -255,6 +255,26 @@ fingerprint.
 | **V6** | does re-running reproduce the result? | **pass** — stable digest |
 | **SEG** | do the predicted classes agree with independent OSM geometry? | **pass** — building recall 0.78, road precision 0.78 |
 
+## Reproducibility
+
+`V6` re-derives the terrain products inside one run and compares digests. Two
+stages were additionally measured across *separate* runs on the same machine:
+
+| stage | repeat-run result |
+|---|---|
+| segmentation (SegFormer on MPS) | **0 of 16,160,400 cells differ** |
+| fusion (4,040,100 cells) | rule counts and class fractions identical |
+
+GeoTIFF *file* hashes do change between runs: the metadata sidecar is also
+written into the TIFF tags and carries `created_utc`. Compare pixel content or
+the metrics JSON, not file bytes.
+
+One caveat worth knowing: fixing the segmentation blend-window floor (tile
+corners were weighted 0.0025 instead of 0.05) shifted roughly 0.005 % of fused
+cells at class boundaries. Small changes to blending weights move a few
+argmax decisions; that is expected, and it is why the rule counts are recorded
+in `metrics/fusion.json` rather than being left implicit.
+
 ## Segmentation and its limits
 
 The default checkpoint is `IgorNer/segformer-b5-loveda`, fine-tuned on LoveDA

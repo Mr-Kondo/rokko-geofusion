@@ -359,7 +359,7 @@ def read_xyz_grid(
         array[rows[valid], cols[valid]] = chunk.z.to_numpy()[valid].astype(np.float32)
 
     transform = from_origin(min_x - spacing / 2, max_y + spacing / 2, spacing, spacing)
-    info = {
+    acquisition = {
         "rows": total_rows,
         "grid_spacing_m": spacing,
         "width": width,
@@ -369,7 +369,7 @@ def read_xyz_grid(
     }
     logger.info("read %s rows from %s onto a %dx%d grid at %.3f m spacing",
                 f"{total_rows:,}", path.name, width, height, spacing)
-    return array, transform, info
+    return array, transform, acquisition
 
 
 def _load_local_xyz(
@@ -395,7 +395,7 @@ def _load_local_xyz(
     if not path.is_file():
         raise ConfigurationRequiredError(f"{key_prefix}.local.path", f"file not found: {path}")
 
-    array, transform, info = read_xyz_grid(path, crs=source.local.crs)
+    array, transform, acquisition = read_xyz_grid(path, crs=source.local.crs)
     regridded = reproject_array_to_grid(
         array,
         src_transform=transform,
@@ -406,7 +406,7 @@ def _load_local_xyz(
         dst_nodata=float("nan"),
         dtype=np.float32,
     )
-    return regridded, {"provider": "local_xyz", "file": str(path), **info}
+    return regridded, {"provider": "local_xyz", "file": str(path), **acquisition}
 
 
 def _load_ckan(
@@ -445,15 +445,15 @@ def _load_ckan(
     patched.local.path = str(cache_path)
     patched.local.crs = source.local.crs
     if suffix in {".tif", ".tiff", ".vrt", ".img"}:
-        array, info = _load_local_raster(config, roi, patched, grid, key_prefix)
+        array, acquisition = _load_local_raster(config, roi, patched, grid, key_prefix)
     elif suffix in {".xyz", ".txt", ".csv", ".asc"}:
-        array, info = _load_local_xyz(config, roi, patched, grid, key_prefix)
+        array, acquisition = _load_local_xyz(config, roi, patched, grid, key_prefix)
     else:
         raise UnsupportedError(
             f"CKAN resource {cache_path.name} has an unsupported extension {suffix!r}. "
             "Convert it to GeoTIFF or regular-grid XYZ and use a local_* provider."
         )
-    return array, {**info, "provider": "ckan", "resource_url": url}
+    return array, {**acquisition, "provider": "ckan", "resource_url": url}
 
 
 # ---------------------------------------------------------------------------
@@ -506,21 +506,21 @@ def fetch_elevation(
                 kind.upper(), source.provider, grid.width, grid.height, grid.resolution_m)
 
     if source.provider == "gsi_tile":
-        array, info = _fetch_gsi_elevation(config, roi, source, grid, client)
+        array, acquisition = _fetch_gsi_elevation(config, roi, source, grid, client)
     elif source.provider == "local_raster":
-        array, info = _load_local_raster(config, roi, source, grid, key_prefix)
+        array, acquisition = _load_local_raster(config, roi, source, grid, key_prefix)
     elif source.provider == "local_xyz":
-        array, info = _load_local_xyz(config, roi, source, grid, key_prefix)
+        array, acquisition = _load_local_xyz(config, roi, source, grid, key_prefix)
     elif source.provider == "ckan":
-        array, info = _load_ckan(config, roi, source, grid, client, key_prefix)
+        array, acquisition = _load_ckan(config, roi, source, grid, client, key_prefix)
     else:  # pragma: no cover - pydantic restricts the literal
         raise UnsupportedError(f"unknown elevation provider {source.provider!r}")
 
     coverage = coverage_fraction(array)
     is_true_lidar = bool(config.lidar.is_true_lidar) and source.provider not in {"gsi_tile"}
-    source_label = f"{source.provider}:{info.get('datasets', info.get('file', ''))}"
+    source_label = f"{source.provider}:{acquisition.get('datasets', acquisition.get('file', ''))}"
     if source.provider == "gsi_tile":
-        source_label = "gsi_tile:" + "+".join(d["dataset"] for d in info["datasets"])
+        source_label = "gsi_tile:" + "+".join(d["dataset"] for d in acquisition["datasets"])
 
     metadata = build_metadata(
         kind=kind,
@@ -528,7 +528,7 @@ def fetch_elevation(
         crs=grid.crs,
         resolution_m=grid.resolution_m,
         roi=roi.to_dict(),
-        acquisition=info,
+        acquisition=acquisition,
         processing={
             "resampling": config.lidar.resampling,
             "tile_crs": config.crs.tile,
