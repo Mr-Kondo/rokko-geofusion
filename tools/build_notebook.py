@@ -14,7 +14,7 @@ import json
 import sys
 from pathlib import Path
 
-REPO = "https://github.com/YOUR_ORG/rokko-geofusion"   # set before publishing
+REPO = "https://github.com/Mr-Kondo/rokko-geofusion"
 NOTEBOOK = Path(__file__).resolve().parents[1] / "notebooks" / "geofusion_demo.ipynb"
 
 
@@ -56,7 +56,7 @@ import os, sys, subprocess
 from pathlib import Path
 
 IN_COLAB = "google.colab" in sys.modules
-REPO_URL = "https://github.com/YOUR_ORG/rokko-geofusion.git"   # <- your fork
+REPO_URL = "https://github.com/Mr-Kondo/rokko-geofusion.git"   # <- your fork, if any
 REPO_DIR = Path("/content/rokko-geofusion") if IN_COLAB else Path.cwd()
 
 if IN_COLAB and not REPO_DIR.exists():

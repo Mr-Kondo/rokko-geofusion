@@ -53,7 +53,7 @@ change to `configs/rokko.yaml` and nothing else.
 ## Install
 
 ```bash
-git clone <this repository> && cd rokko-geofusion
+git clone https://github.com/Mr-Kondo/rokko-geofusion.git && cd rokko-geofusion
 python -m venv .venv && source .venv/bin/activate     # Python 3.10+
 pip install -e ".[all]"
 python scripts/check_environment.py --config configs/rokko.yaml
@@ -70,8 +70,9 @@ may not have wheels for rasterio/geopandas yet.
 
 ### Colab
 
-Open `notebooks/geofusion_demo.ipynb`, set the repository URL in cell 01 and
-run top to bottom. The notebook installs the package, runs the pipeline stage
+Open `notebooks/geofusion_demo.ipynb` and run it top to bottom (cell 01 clones
+this repository and installs the package; change `REPO_URL` there if you work
+from a fork). The notebook installs the package, runs the pipeline stage
 by stage and displays the results. It contains **no processing logic** — that
 rule is enforced by `tests/test_pipeline.py`.
 
