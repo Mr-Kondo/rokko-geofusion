@@ -19,15 +19,17 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rokko_geofusion.config import Config
+from rokko_geofusion.config import Config, OsmConfig
 from rokko_geofusion.crs import RoiGeometry
 from rokko_geofusion.exceptions import DataSourceError, UnsupportedError
-from rokko_geofusion.io.http import HttpClient
+from rokko_geofusion.io.http import HttpClient, RetryPolicy
+from rokko_geofusion.utils.logging import log_failure_context
 from rokko_geofusion.utils.metadata import build_metadata, write_sidecar
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,11 @@ PROMOTED_TAGS = (
     "railway",
     "amenity",
 )
+
+#: Head-room between the Overpass query's own `[timeout:N]` and the HTTP read
+#: timeout, so the server's timeout answer arrives instead of the client
+#: cutting the connection first.
+_OVERPASS_TIMEOUT_MARGIN_S = 30.0
 
 #: Tags that make a closed way an area rather than a ring-shaped line.
 _AREA_TAGS = ("building", "landuse", "leisure", "natural", "amenity", "area")
@@ -189,30 +196,8 @@ def fetch_layer(
 
     osm = config.gis.osm
     query = build_query(layer, roi.bounds_geographic, osm.timeout_s)
-    endpoints = [osm.endpoint, *osm.mirrors]
-
-    payload: bytes | None = None
-    last_error: Exception | None = None
-    for endpoint in endpoints:
-        try:
-            payload = client.request(
-                endpoint,
-                method="POST",
-                data=f"data={query}",
-                expect_content_type="application/json",
-                force_refresh=overwrite,
-                backoff_s=osm.backoff_s,
-                context={"layer": layer, "roi": roi.key},
-            )
-            break
-        except DataSourceError as exc:
-            last_error = exc
-            logger.warning("Overpass endpoint %s failed for layer %s: %s",
-                           endpoint, layer, exc)
-    if payload is None:
-        raise DataSourceError(
-            f"all Overpass endpoints failed for layer {layer!r}: {last_error}"
-        )
+    payload = query_overpass(client, osm, query, layer=layer, roi_key=roi.key,
+                             overwrite=overwrite)
 
     try:
         document = json.loads(payload.decode("utf-8"))
@@ -239,6 +224,64 @@ def fetch_layer(
     logger.info("layer %-9s %5d features (%d before clipping to the ROI)",
                 layer, len(clipped), len(frame))
     return clipped.reset_index(drop=True)
+
+
+def query_overpass(
+    client: HttpClient,
+    osm: OsmConfig,
+    query: str,
+    *,
+    layer: str,
+    roi_key: str,
+    overwrite: bool = False,
+) -> bytes:
+    """Run one Overpass query, failing over across the endpoint and its mirrors.
+
+    Each round tries every endpoint once, back to back. When the primary is
+    overloaded (HTTP 504) a mirror usually answers within seconds, so it has to
+    be tried next -- not after minutes of retrying the same busy server. The
+    backoff applies only between full rounds.
+    """
+    endpoints = [osm.endpoint, *osm.mirrors]
+    attempt_once = RetryPolicy(
+        attempts=1, timeout_s=osm.timeout_s + _OVERPASS_TIMEOUT_MARGIN_S, final=False
+    )
+    failures: list[str] = []
+    for round_number in range(1, osm.max_retries + 1):
+        for endpoint in endpoints:
+            try:
+                payload = client.request(
+                    endpoint,
+                    method="POST",
+                    data=f"data={query}",
+                    expect_content_type="application/json",
+                    force_refresh=overwrite,
+                    retry=attempt_once,
+                    context={"layer": layer, "roi": roi_key},
+                )
+            except DataSourceError as exc:
+                failures.append(f"round {round_number} {endpoint}: {exc}")
+                continue
+            if payload is not None:
+                return payload
+        if round_number < osm.max_retries:
+            wait = osm.backoff_s * round_number
+            logger.warning("every Overpass endpoint failed for layer %s; round %d/%d in %.0f s",
+                           layer, round_number + 1, osm.max_retries, wait)
+            time.sleep(wait)
+
+    log_failure_context(
+        logger,
+        what=f"Overpass query for layer {layer!r}",
+        target=", ".join(endpoints),
+        roi=roi_key,
+        attempts=f"{osm.max_retries} round(s) x {len(endpoints)} endpoint(s)",
+        cause=failures[-1] if failures else "unknown",
+    )
+    raise DataSourceError(
+        f"all {len(endpoints)} Overpass endpoint(s) failed for layer {layer!r} over "
+        f"{osm.max_retries} round(s); last error: {failures[-1] if failures else 'unknown'}"
+    )
 
 
 def estimate_building_heights(frame, config: Config):

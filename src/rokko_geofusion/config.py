@@ -231,10 +231,14 @@ class OsmConfig(_Base):
             "https://z.overpass-api.de/api/interpreter",
         ]
     )
+    #: Server-side query budget (`[timeout:N]`); the HTTP read timeout is set
+    #: slightly above it.
     timeout_s: float = 180.0
+    #: Rounds over [endpoint, *mirrors]. Each round tries every endpoint once,
+    #: back to back, so a busy primary fails over to a mirror within seconds.
     max_retries: int = 3
-    #: Overpass hands out query slots on a ~60 s cycle; retrying sooner just
-    #: burns the remaining slots, so this is much larger than the HTTP default.
+    #: Wait before round n+1 is ``backoff_s * n``. Overpass hands out query
+    #: slots on a ~60 s cycle, so this is much larger than the HTTP default.
     backoff_s: float = 30.0
     #: Overpass rejects requests without a descriptive User-Agent (HTTP 406).
     user_agent: str = "rokko-geofusion/0.1 (academic research; contact: repository issues)"

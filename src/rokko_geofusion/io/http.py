@@ -16,6 +16,7 @@ import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,25 @@ logger = logging.getLogger(__name__)
 
 #: Content types that indicate an error page rather than the payload we asked for.
 _ERROR_CONTENT_HINTS = ("text/html", "application/xml", "text/xml")
+
+#: A host that does not accept the connection should cost seconds, not the
+#: whole read timeout (which may be minutes for a heavy Overpass query).
+_CONNECT_TIMEOUT_S = 10.0
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    """Per-request overrides of the configured retry behaviour.
+
+    ``None`` falls back to :class:`HttpConfig`. ``final=False`` tells the client
+    the caller has somewhere else to go (a mirror): a failure is then logged as
+    a warning, because it is not the stage failing.
+    """
+
+    attempts: int | None = None
+    backoff_s: float | None = None
+    timeout_s: float | None = None
+    final: bool = True
 
 
 def _cache_key(url: str, params: Mapping[str, Any] | None, body: str | None) -> str:
@@ -122,15 +142,16 @@ class HttpClient:
         expect_content_type: str | None = None,
         allow_missing: bool = False,
         force_refresh: bool = False,
-        backoff_s: float | None = None,
+        retry: RetryPolicy | None = None,
         context: Mapping[str, Any] | None = None,
     ) -> bytes | None:
-        """Fetch ``url``; return the body, or ``None`` when legitimately absent.
-
-        ``backoff_s`` overrides the configured retry delay for services with
-        their own pacing rules (Overpass hands out slots on a ~60 s cycle).
-        """
-        backoff = self.config.backoff_s if backoff_s is None else backoff_s
+        """Fetch ``url``; return the body, or ``None`` when legitimately absent."""
+        policy = retry or RetryPolicy()
+        attempts = max(1, self.config.max_retries if policy.attempts is None
+                       else policy.attempts)
+        backoff = self.config.backoff_s if policy.backoff_s is None else policy.backoff_s
+        read_timeout = self.config.timeout_s if policy.timeout_s is None else policy.timeout_s
+        timeout = (min(_CONNECT_TIMEOUT_S, read_timeout), read_timeout)
         key = _cache_key(url, params, data)
         if not force_refresh:
             cached = self._read_cache(key)
@@ -144,7 +165,7 @@ class HttpClient:
             )
 
         last_error: Exception | None = None
-        for attempt in range(1, self.config.max_retries + 1):
+        for attempt in range(1, attempts + 1):
             self._throttle()
             try:
                 response = self._session.request(
@@ -152,13 +173,12 @@ class HttpClient:
                     url,
                     params=dict(params) if params else None,
                     data=data,
-                    timeout=self.config.timeout_s,
+                    timeout=timeout,
                 )
             except requests.RequestException as exc:
                 last_error = exc
-                logger.debug("attempt %d/%d failed for %s: %s",
-                             attempt, self.config.max_retries, url, exc)
-                if attempt < self.config.max_retries:
+                logger.debug("attempt %d/%d failed for %s: %s", attempt, attempts, url, exc)
+                if attempt < attempts:
                     time.sleep(backoff * attempt)
                 continue
 
@@ -173,20 +193,21 @@ class HttpClient:
                 last_error = DataSourceError(
                     f"{url} returned HTTP {response.status_code} (rate limited / busy)"
                 )
-                wait = backoff * attempt * 2
-                logger.warning("HTTP %d from %s; retrying in %.1fs (attempt %d/%d)",
-                               response.status_code, url, wait, attempt, self.config.max_retries)
-                time.sleep(wait)
+                # Waiting after the final attempt would only delay the failure.
+                if attempt < attempts:
+                    wait = backoff * attempt * 2
+                    logger.warning("HTTP %d from %s; retrying in %.1fs (attempt %d/%d)",
+                                   response.status_code, url, wait, attempt, attempts)
+                    time.sleep(wait)
                 continue
 
             if not response.ok:
-                self.stats["errors"] += 1
-                log_failure_context(
-                    logger,
+                self._report_failure(
+                    policy,
                     what=f"HTTP {response.status_code} from data source",
                     url=url,
                     cause="the endpoint may have moved or changed its request format",
-                    **(context or {}),
+                    context=context,
                 )
                 raise DataSourceError(
                     f"{url} returned HTTP {response.status_code}: "
@@ -194,16 +215,15 @@ class HttpClient:
                 )
 
             if self._looks_like_error_page(response, expect_content_type):
-                self.stats["errors"] += 1
                 content_type = response.headers.get("Content-Type", "?")
-                log_failure_context(
-                    logger,
+                self._report_failure(
+                    policy,
                     what="unexpected response content type",
                     url=url,
+                    cause="the upstream API changed, or the request was rejected",
+                    context=context,
                     expected=expect_content_type,
                     received=content_type,
-                    cause="the upstream API changed, or the request was rejected",
-                    **(context or {}),
                 )
                 raise DataSourceError(
                     f"{url} returned Content-Type {content_type!r}, expected "
@@ -216,18 +236,33 @@ class HttpClient:
             self._write_cache(key, url, payload)
             return payload
 
-        self.stats["errors"] += 1
-        log_failure_context(
-            logger,
+        self._report_failure(
+            policy,
             what="exhausted retries for data source",
             url=url,
-            attempts=self.config.max_retries,
             cause=str(last_error) if last_error else "unknown",
-            **(context or {}),
+            context=context,
+            attempts=attempts,
         )
-        raise DataSourceError(
-            f"could not fetch {url} after {self.config.max_retries} attempts: {last_error}"
-        )
+        raise DataSourceError(f"could not fetch {url} after {attempts} attempt(s): {last_error}")
+
+    def _report_failure(
+        self,
+        policy: RetryPolicy,
+        *,
+        what: str,
+        url: str,
+        cause: str,
+        context: Mapping[str, Any] | None,
+        **details: Any,
+    ) -> None:
+        """Log a failed request: as the stage failing, or as a warning to fail over."""
+        self.stats["errors"] += 1
+        if policy.final:
+            log_failure_context(logger, what=what, url=url, cause=cause,
+                                **details, **(context or {}))
+        else:
+            logger.warning("%s at %s (%s); trying the next endpoint", what, url, cause)
 
     def get_many(
         self,

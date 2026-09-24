@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from rokko_geofusion.config import HttpConfig, OsmConfig
+from rokko_geofusion.exceptions import DataSourceError
 from rokko_geofusion.gis.osm import build_query
 from rokko_geofusion.imagery.orthophoto import decode_tile
 from rokko_geofusion.io.http import HttpClient
@@ -77,24 +78,15 @@ def test_missing_tile_is_reported_as_missing_not_as_an_error(client):
 
 
 def test_overpass_still_accepts_the_query_format(client):
-    osm = OsmConfig()
+    """The query format, `out geom;`, and the failover path, against the live service."""
+    from rokko_geofusion.gis.osm import query_overpass
+
     query = build_query("building", (135.2338, 34.7274, 135.2358, 34.7294), 25)
-    payload = None
-    errors = []
-    for endpoint in (osm.endpoint, *osm.mirrors):
-        try:
-            payload = client.request(
-                endpoint,
-                method="POST",
-                data=f"data={query}",
-                expect_content_type="application/json",
-                backoff_s=5.0,
-            )
-            break
-        except Exception as exc:  # noqa: BLE001 - try the next mirror
-            errors.append(f"{endpoint}: {exc}")
-    if payload is None:
-        pytest.skip(f"no Overpass endpoint reachable: {errors}")
+    try:
+        payload = query_overpass(client, OsmConfig(), query, layer="building",
+                                 roi_key="canary")
+    except DataSourceError as exc:
+        pytest.skip(f"no Overpass endpoint reachable: {exc}")
 
     document = json.loads(payload)
     assert "elements" in document

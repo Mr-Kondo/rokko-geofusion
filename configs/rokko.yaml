@@ -99,12 +99,18 @@ gis:
   providers: [osm]
   osm:
     endpoint: https://overpass-api.de/api/interpreter
-    mirrors:                       # tried in order when the primary fails
+    # Tried immediately after the primary within each round. Checked 2026-09-25:
+    # the primary answered HTTP 504 (overloaded) while both mirrors answered 200
+    # in ~2 s. maps.mail.ru/osm/tools/overpass/api/interpreter also answered
+    # correctly (~16 s); it is run by a different operator, so it is a separate
+    # failure domain -- add it here if you want one. kumi.systems and
+    # private.coffee did not respond.
+    mirrors:
       - https://lz4.overpass-api.de/api/interpreter
       - https://z.overpass-api.de/api/interpreter
-    timeout_s: 180.0
-    max_retries: 3
-    backoff_s: 30.0                # Overpass hands out slots on a ~60 s cycle
+    timeout_s: 180.0               # server-side query budget; HTTP waits a bit longer
+    max_retries: 3                 # rounds over [endpoint, *mirrors]
+    backoff_s: 30.0                # wait before round n+1 = backoff_s * n
     user_agent: "rokko-geofusion/0.1 (academic research; contact: repository issues)"
     layers: [building, road, water, landuse]
     attribution: "(c) OpenStreetMap contributors, ODbL"

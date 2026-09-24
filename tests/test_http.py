@@ -7,7 +7,7 @@ import requests
 
 from rokko_geofusion.config import HttpConfig
 from rokko_geofusion.exceptions import DataSourceError, DataUnavailableError
-from rokko_geofusion.io.http import HttpClient
+from rokko_geofusion.io.http import HttpClient, RetryPolicy
 
 
 class _FakeResponse:
@@ -117,7 +117,7 @@ def test_matching_content_type_is_accepted(http_config, tmp_path):
 
 def test_connection_errors_are_retried_then_reported(http_config, tmp_path):
     client = _client(http_config, tmp_path, [requests.ConnectionError("no route")])
-    with pytest.raises(DataSourceError, match="after 3 attempts"):
+    with pytest.raises(DataSourceError, match=r"after 3 attempt\(s\)"):
         client.request("https://example.org/down")
     assert len(client._session.calls) == 3
 
@@ -156,3 +156,56 @@ def test_get_many_preserves_per_url_results(http_config, tmp_path):
     results = client.get_many(urls, progress=False)
     assert set(results) == set(urls)
     assert all(value == b"x" for value in results.values())
+
+
+# --- retry policy -----------------------------------------------------------
+@pytest.fixture()
+def recorded_sleeps(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr("rokko_geofusion.io.http.time.sleep", sleeps.append)
+    return sleeps
+
+
+def test_no_wait_after_the_final_attempt(tmp_path, recorded_sleeps):
+    """Regression: a 504 on the last attempt used to sleep 180 s, then give up."""
+    config = HttpConfig(timeout_s=1.0, max_retries=3, backoff_s=30.0)
+    client = _client(config, tmp_path, [_FakeResponse(status_code=504)])
+    with pytest.raises(DataSourceError):
+        client.request("https://example.org/busy")
+    assert len(client._session.calls) == 3
+    assert recorded_sleeps == [60.0, 120.0]   # between attempts only
+
+
+def test_a_single_attempt_policy_fails_fast(http_config, tmp_path, recorded_sleeps):
+    client = _client(http_config, tmp_path, [_FakeResponse(status_code=504)])
+    with pytest.raises(DataSourceError):
+        client.request("https://example.org/busy", retry=RetryPolicy(attempts=1))
+    assert len(client._session.calls) == 1
+    assert recorded_sleeps == []
+
+
+def test_timeout_override_keeps_the_connect_timeout_short(http_config, tmp_path):
+    client = _client(http_config, tmp_path, [_FakeResponse(content=b"ok")])
+    client.request("https://example.org/slow", retry=RetryPolicy(timeout_s=210.0))
+    connect, read = client._session.calls[0][2]["timeout"]
+    assert read == 210.0
+    assert connect <= 10.0
+
+
+def test_non_final_failures_are_warnings_not_stage_failures(http_config, tmp_path, caplog):
+    client = _client(http_config, tmp_path, [_FakeResponse(status_code=504)])
+    with caplog.at_level("WARNING"), pytest.raises(DataSourceError):
+        client.request("https://example.org/busy",
+                       retry=RetryPolicy(attempts=1, final=False))
+    assert "trying the next endpoint" in caplog.text
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]
+
+
+def test_final_failures_still_log_the_full_context(http_config, tmp_path, caplog):
+    client = _client(http_config, tmp_path, [_FakeResponse(status_code=504)])
+    with caplog.at_level("WARNING"), pytest.raises(DataSourceError):
+        client.request("https://example.org/busy", retry=RetryPolicy(attempts=1),
+                       context={"layer": "road"})
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert any("exhausted retries" in message for message in errors)
+    assert any("road" in message for message in errors)

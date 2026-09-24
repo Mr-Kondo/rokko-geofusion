@@ -12,12 +12,13 @@ import json
 import numpy as np
 import pytest
 
-from rokko_geofusion.exceptions import UnsupportedError
+from rokko_geofusion.exceptions import DataSourceError, UnsupportedError
 from rokko_geofusion.gis.osm import (
     LAYER_QUERIES,
     _elements_to_records,
     build_query,
     estimate_building_heights,
+    query_overpass,
 )
 from rokko_geofusion.imagery.orthophoto import decode_tile
 from rokko_geofusion.io.tiles import TILE_PX
@@ -261,3 +262,79 @@ def test_building_heights_on_an_empty_frame(config):
     frame = gpd.GeoDataFrame({"geometry": []}, crs=config.crs.projected)
     result = estimate_building_heights(frame, config)
     assert "height_m" in result.columns
+
+
+# --- Overpass failover -------------------------------------------------------
+class _ScriptedOverpass:
+    """Fake client: each endpoint answers from its own queue of outcomes."""
+
+    def __init__(self, outcomes):
+        self.outcomes = {endpoint: list(queue) for endpoint, queue in outcomes.items()}
+        self.calls: list[tuple[str, object]] = []
+
+    def request(self, url, **kwargs):
+        self.calls.append((url, kwargs.get("retry")))
+        outcome = self.outcomes[url].pop(0) if self.outcomes[url] else DataSourceError("busy")
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+@pytest.fixture()
+def osm_settings():
+    from rokko_geofusion.config import OsmConfig
+
+    return OsmConfig(endpoint="https://primary/api", max_retries=3, backoff_s=30.0,
+                     mirrors=["https://mirror-a/api", "https://mirror-b/api"])
+
+
+@pytest.fixture()
+def sleeps(monkeypatch):
+    recorded: list[float] = []
+    monkeypatch.setattr("rokko_geofusion.gis.osm.time.sleep", recorded.append)
+    return recorded
+
+
+def test_a_busy_primary_fails_over_to_a_mirror_without_waiting(osm_settings, sleeps):
+    """Regression: a 504 from the primary used to cost minutes before a mirror was tried."""
+    client = _ScriptedOverpass({
+        "https://primary/api": [DataSourceError("HTTP 504")],
+        "https://mirror-a/api": [b'{"elements": []}'],
+        "https://mirror-b/api": [],
+    })
+    payload = query_overpass(client, osm_settings, "q", layer="road", roi_key="r")
+    assert payload == b'{"elements": []}'
+    assert [url for url, _ in client.calls] == ["https://primary/api", "https://mirror-a/api"]
+    assert sleeps == []
+
+
+def test_each_endpoint_gets_one_non_final_attempt_per_round(osm_settings, sleeps):
+    client = _ScriptedOverpass({"https://primary/api": [b"{}"],
+                                "https://mirror-a/api": [], "https://mirror-b/api": []})
+    query_overpass(client, osm_settings, "q", layer="road", roi_key="r")
+    retry = client.calls[0][1]
+    assert retry.attempts == 1
+    assert retry.final is False
+    # The HTTP read timeout must outlast the query's own server-side timeout.
+    assert retry.timeout_s > osm_settings.timeout_s
+
+
+def test_waits_only_between_full_rounds(osm_settings, sleeps):
+    client = _ScriptedOverpass({
+        "https://primary/api": [DataSourceError("504"), b"{}"],
+        "https://mirror-a/api": [DataSourceError("504")],
+        "https://mirror-b/api": [DataSourceError("504")],
+    })
+    assert query_overpass(client, osm_settings, "q", layer="road", roi_key="r") == b"{}"
+    assert len(client.calls) == 4          # three in round 1, the primary in round 2
+    assert sleeps == [30.0]
+
+
+def test_all_endpoints_failing_is_reported_with_every_endpoint(osm_settings, sleeps, caplog):
+    client = _ScriptedOverpass({"https://primary/api": [], "https://mirror-a/api": [],
+                                "https://mirror-b/api": []})
+    with caplog.at_level("ERROR"), pytest.raises(DataSourceError, match="3 Overpass endpoint"):
+        query_overpass(client, osm_settings, "q", layer="water", roi_key="r")
+    assert len(client.calls) == 9                 # 3 rounds x 3 endpoints
+    assert sleeps == [30.0, 60.0]                 # nothing after the last round
+    assert "mirror-b" in caplog.text and "water" in caplog.text
