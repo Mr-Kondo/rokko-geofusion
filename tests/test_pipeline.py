@@ -185,6 +185,15 @@ def test_notebook_is_valid_and_has_no_stored_output(repo_root):
             assert cell["execution_count"] is None
 
 
+def test_notebook_cells_carry_the_ids_nbformat_4_5_requires(repo_root):
+    notebook = _notebook(repo_root)
+    assert (notebook["nbformat"], notebook["nbformat_minor"]) >= (4, 5)
+    ids = [cell.get("id") for cell in notebook["cells"]]
+    assert all(ids), "every cell needs an id under nbformat 4.5"
+    assert len(set(ids)) == len(ids), "cell ids must be unique"
+    assert all(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", cell_id) for cell_id in ids)
+
+
 def test_notebook_defines_no_functions_or_classes(repo_root):
     """CLAUDE.md rule 1: processing logic never lives in a notebook."""
     offenders = []
@@ -215,6 +224,37 @@ def test_notebook_covers_every_pipeline_stage(repo_root):
     joined = "\n".join("".join(cell["source"]) for cell in _notebook(repo_root)["cells"])
     for stage in DEFAULT_ORDER:
         assert stage in joined, f"the notebook never mentions the {stage} stage"
+
+
+def test_first_cell_makes_the_package_importable_without_a_restart(repo_root):
+    """Regression: in Colab, cell 03 failed with ModuleNotFoundError.
+
+    Cell 01 runs `pip install -e` inside the already-running kernel. An editable
+    install is registered through a .pth file, and Python reads .pth files only
+    at start-up, so the kernel that performed the install cannot import it.
+
+    `python -S` reproduces that state (no site-packages, no .pth processing), and
+    the notebooks/ folder is where Jupyter starts a local kernel.
+    """
+    import subprocess
+    import sys
+
+    notebook = _notebook(repo_root)
+    first_cell = next(cell for cell in notebook["cells"] if cell["cell_type"] == "code")
+    probe = (
+        "".join(first_cell["source"])
+        + "\nimport os\nimport rokko_geofusion\nprint('CWD=' + os.getcwd())\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-S", "-c", probe],
+        cwd=repo_root / "notebooks",
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert completed.returncode == 0, completed.stderr
+    # Every later cell uses paths relative to the repository root.
+    assert f"CWD={repo_root}" in completed.stdout
 
 
 def test_notebook_generator_is_deterministic(repo_root, tmp_path, monkeypatch):

@@ -51,21 +51,46 @@ Repository: {REPO}
 
     md("## 01 · Install"),
     code("""
-# Colab: clone and install. Local: this is a no-op if you are already in the repo.
-import os, sys, subprocess
+# Colab: clone and install. Locally: move to the repository root.
+import importlib
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 IN_COLAB = "google.colab" in sys.modules
 REPO_URL = "https://github.com/Mr-Kondo/rokko-geofusion.git"   # <- your fork, if any
-REPO_DIR = Path("/content/rokko-geofusion") if IN_COLAB else Path.cwd()
 
-if IN_COLAB and not REPO_DIR.exists():
-    subprocess.run(["git", "clone", "--depth", "1", REPO_URL, str(REPO_DIR)], check=True)
 if IN_COLAB:
-    os.chdir(REPO_DIR)
+    REPO_DIR = Path("/content/rokko-geofusion")
+    if not REPO_DIR.exists():
+        subprocess.run(["git", "clone", "--depth", "1", REPO_URL, str(REPO_DIR)], check=True)
+    else:
+        # A reused runtime keeps its old clone; update it so later fixes apply.
+        pulled = subprocess.run(["git", "-C", str(REPO_DIR), "pull", "--ff-only", "-q"],
+                                capture_output=True, text=True)
+        if pulled.returncode != 0:
+            print("WARNING: could not update the existing clone:", pulled.stderr.strip())
+else:
+    # Jupyter starts the kernel in the notebook's own folder; the repository is one up.
+    REPO_DIR = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
+
+os.chdir(REPO_DIR)   # every later cell uses paths relative to the repository root
+if IN_COLAB:
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", ".[all]"], check=True)
 
-print("working directory:", Path.cwd())
+# `pip install -e` registers the package through a .pth file, and Python reads
+# .pth files only at start-up: this already-running kernel would not see the
+# package until a restart. Putting src/ on the path makes it importable now.
+SRC_DIR = str(REPO_DIR / "src")
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
+importlib.invalidate_caches()
+
+import rokko_geofusion   # fail here rather than in a later cell
+
+print("repository:", Path.cwd())
+print("rokko_geofusion", rokko_geofusion.__version__, "from", Path(rokko_geofusion.__file__).parent)
 """),
 
     md("## 02 · Runtime information\n\nDetects CPU, RAM, GPU, VRAM, CUDA, GDAL and the "
@@ -337,8 +362,11 @@ if IN_COLAB:
 
 
 def build() -> dict:
+    # nbformat 4.5 requires a unique `id` on every cell. Numbering them keeps the
+    # output deterministic, so regenerating an unchanged notebook is a no-op diff.
+    cells = [{"id": f"cell-{index:02d}", **cell} for index, cell in enumerate(CELLS)]
     return {
-        "cells": CELLS,
+        "cells": cells,
         "metadata": {
             "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
             "language_info": {"name": "python", "version": "3.12"},
