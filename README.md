@@ -1,5 +1,7 @@
 # rokko-geofusion
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Mr-Kondo/rokko-geofusion/blob/main/notebooks/geofusion_demo.ipynb)
+
 LiDAR-derived terrain × aerial imagery × GIS × GeoAI for one geographic area,
 on one explicit coordinate reference system.
 
@@ -70,7 +72,9 @@ may not have wheels for rasterio/geopandas yet.
 
 ### Colab
 
-Open `notebooks/geofusion_demo.ipynb` and run it top to bottom (cell 01 clones
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Mr-Kondo/rokko-geofusion/blob/main/notebooks/geofusion_demo.ipynb)
+
+Open [`notebooks/geofusion_demo.ipynb` in Colab](https://colab.research.google.com/github/Mr-Kondo/rokko-geofusion/blob/main/notebooks/geofusion_demo.ipynb) and run it top to bottom (cell 01 clones
 this repository and installs the package; change `REPO_URL` there if you work
 from a fork). The notebook installs the package, runs the pipeline stage
 by stage and displays the results. It contains **no processing logic** — that
@@ -437,7 +441,7 @@ ladder, prompt contracts, and the rule that notebooks contain no logic.
 
 ## Licensing
 
-The code is MIT. The **data is not**: GSI elevation and imagery are subject to
+The code is released under the [MIT License](LICENSE). The **data is not**: GSI elevation and imagery are subject to
 the GSI terms of use, and OpenStreetMap data is ODbL, which has share-alike
 obligations for derived databases — `fusion_cells.parquet` is one. Model
 weights carry their own licences. Check all of these before redistributing
