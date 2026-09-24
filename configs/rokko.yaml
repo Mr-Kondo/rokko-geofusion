@@ -99,15 +99,21 @@ gis:
   providers: [osm]
   osm:
     endpoint: https://overpass-api.de/api/interpreter
-    # Tried immediately after the primary within each round. Checked 2026-09-25:
-    # the primary answered HTTP 504 (overloaded) while both mirrors answered 200
-    # in ~2 s. maps.mail.ru/osm/tools/overpass/api/interpreter also answered
-    # correctly (~16 s); it is run by a different operator, so it is a separate
-    # failure domain -- add it here if you want one. kumi.systems and
-    # private.coffee did not respond.
+    # Tried in order, immediately after the primary, within each round.
+    # Checked 2026-09-25 with the real building query over this ROI:
+    #   overpass-api.de (primary) and lz4  HTTP 504, overloaded
+    #   z.overpass-api.de                  200 in 3 s
+    #   maps.mail.ru                       200 in 25 s, identical result (1558 ways,
+    #                                      8 relations) and the same OSM replication
+    #                                      timestamp as z, so which server answers
+    #                                      does not change the data
+    # mail.ru is run by a different operator than the FOSSGIS servers above, so
+    # it keeps working when they are overloaded together; it is slowest, so it
+    # goes last. kumi.systems and private.coffee did not respond.
     mirrors:
       - https://lz4.overpass-api.de/api/interpreter
       - https://z.overpass-api.de/api/interpreter
+      - https://maps.mail.ru/osm/tools/overpass/api/interpreter
     timeout_s: 180.0               # server-side query budget; HTTP waits a bit longer
     max_retries: 3                 # rounds over [endpoint, *mirrors]
     backoff_s: 30.0                # wait before round n+1 = backoff_s * n

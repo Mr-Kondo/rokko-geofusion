@@ -225,10 +225,13 @@ class ImageryConfig(_Base):
 # ---------------------------------------------------------------------------
 class OsmConfig(_Base):
     endpoint: str = "https://overpass-api.de/api/interpreter"
+    #: Tried in order after the primary. The last one is run by a different
+    #: operator, so it is a separate failure domain from the FOSSGIS servers.
     mirrors: list[str] = Field(
         default_factory=lambda: [
             "https://lz4.overpass-api.de/api/interpreter",
             "https://z.overpass-api.de/api/interpreter",
+            "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
         ]
     )
     #: Server-side query budget (`[timeout:N]`); the HTTP read timeout is set
