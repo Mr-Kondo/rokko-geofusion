@@ -249,18 +249,28 @@ for r in ml["results"]:
 display(Image(filename=str(config.paths.figures / "pointcloud_ml.png")))
 """),
 
-    md("## 12 · VLM — visual interpretation\n\nThe vision model sees rendered views "
-       "only, and is forbidden from producing numbers. Set an API key first; without "
-       "one the stage records `status: unavailable` and the notebook continues."),
+    md("## 12 · VLM — visual interpretation\n\n"
+       "An open-weights model (Qwen3-VL) runs **on this runtime's GPU**: no API key, "
+       "and nothing leaves the machine. Its size follows the detected GPU memory "
+       "(`local_models.auto_tiers`): 8B on an A100, 4B on a T4 or L4. The first run "
+       "downloads it (8B: about 17.5 GB). The model sees rendered views only and is "
+       "forbidden from producing numbers. To use a hosted API instead, set "
+       "`vlm.provider: anthropic` and export the key."),
     code("""
-import os
-# os.environ["ANTHROPIC_API_KEY"] = "sk-ant-..."   # or use Colab secrets
-print("API key set:", bool(os.environ.get(config.vlm.api_key_env)))
+from rokko_geofusion.environment import detect_environment
+from rokko_geofusion.local_model import choose_local_model
+
+if config.vlm.provider == "local":
+    choice = choose_local_model(config.vlm.model, config, detect_environment(probe_packages=False))
+    print(f"VLM model: {choice.model_id} on {choice.device}  ({choice.reason})")
+else:
+    print(f"VLM model: {config.vlm.model} via the {config.vlm.provider} API")
 
 !python scripts/run_pipeline.py --config configs/rokko.yaml --stage vlm
 """),
     code("""
 vlm = read_json(config.paths.reports / "vlm_analysis.json")
+print("status:", vlm["status"], "|", vlm.get("model", ""), vlm.get("runtime", {}).get("dtype", ""))
 if vlm["status"] == "ok":
     print("terrain:   ", vlm["terrain_description"])
     print("land cover:", vlm["land_cover_description"])
@@ -269,8 +279,10 @@ if vlm["status"] == "ok":
         print(" pattern:", item)
     for item in vlm["uncertainties"]:
         print(" uncertainty:", item)
+elif vlm["status"] == "unparsed":
+    print("The model did not answer in the requested JSON; raw text:\\n", vlm["raw_text"][:2000])
 else:
-    print("VLM unavailable:", vlm["reason"])
+    print("reason:", vlm.get("reason"))
 
 for path in sorted((config.paths.figures / "vlm_inputs").glob("*.png")):
     display(Image(filename=str(path), width=430))
@@ -278,7 +290,8 @@ for path in sorted((config.paths.figures / "vlm_inputs").glob("*.png")):
 
     md("## 13 · LLM — integrated analysis\n\nMeasurements come from Python; the "
        "language model integrates and explains them, keeping Measured / Observed / "
-       "Inferred / Uncertain apart."),
+       "Inferred / Uncertain apart. With `llm.model: auto` it is the same local "
+       "model as the VLM stage, now used for text only."),
     code("""
 !python scripts/run_pipeline.py --config configs/rokko.yaml --stage llm
 """),
@@ -287,10 +300,13 @@ from IPython.display import Markdown
 
 report_path = config.paths.reports / "geoai_report.md"
 report = read_json(config.paths.reports / "geoai_report.json")
-if report.get("status") == "ok":
+print("status:", report["status"], "|", report.get("model", ""))
+if report["status"] == "ok":
     display(Markdown(report_path.read_text(encoding="utf-8")))
+elif report["status"] == "unparsed":
+    print("The model did not answer in the requested JSON; raw text:\\n", report["raw_text"][:3000])
 else:
-    print("LLM unavailable:", report.get("reason"))
+    print("reason:", report.get("reason"))
     print("The measurements are still available:",
           config.paths.reports / "analysis_payload.json")
 """),

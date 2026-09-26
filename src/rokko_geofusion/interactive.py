@@ -26,6 +26,7 @@ from rokko_geofusion.exceptions import UnsupportedError
 from rokko_geofusion.pipeline import PipelineResult, run_pipeline
 from rokko_geofusion.report import build_payload
 from rokko_geofusion.utils.cli import DEFAULT_CONFIG
+from rokko_geofusion.utils.metadata import read_json
 
 logger = logging.getLogger(__name__)
 
@@ -140,8 +141,12 @@ def analyze_roi(
         "pointcloud": config.paths.pointcloud / f"cloud.{config.output.pointcloud_format}",
         "fused_class": config.paths.raster / "fused_class.tif",
         "fusion_table": config.paths.vector / "fusion_cells.parquet",
-        "report": config.paths.reports / "geoai_report.md",
     }
+    # The Markdown report is only a product when the run that wrote it succeeded;
+    # the JSON status says so, the file's existence alone does not.
+    report_status = config.paths.reports / "geoai_report.json"
+    if report_status.is_file() and read_json(report_status).get("status") == "ok":
+        products["report"] = config.paths.reports / "geoai_report.md"
     return RoiAnalysis(
         config=config,
         roi=roi,

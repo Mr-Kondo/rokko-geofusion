@@ -74,6 +74,8 @@ class GeoAiReport:
     provider: str = ""
     model: str = ""
     language: str = "ja"
+    #: Device, dtype and why this model was chosen (local provider only).
+    runtime: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -143,12 +145,15 @@ def run_llm_analysis(
     adapter = adapter or load_llm(config)
     prompt = build_prompt(payload, vlm_analysis, language=config.llm.language)
     text = adapter.complete(SYSTEM_PROMPT, prompt)
+    describe = getattr(adapter, "describe", None)
+    runtime = describe() if callable(describe) else {}
 
     parsed_payload, reason = parse_json_response(text)
     if parsed_payload is None:
         logger.warning("LLM response could not be parsed (%s); keeping the raw text", reason)
         return GeoAiReport(
             raw_text=text, parsed=False, provider=adapter.provider, model=adapter.model,
+            runtime=runtime,
             language=config.llm.language,
             uncertain=[f"structured parsing failed: {reason}"],
         )
@@ -163,5 +168,6 @@ def run_llm_analysis(
         parsed=True,
         provider=adapter.provider,
         model=adapter.model,
+        runtime=runtime,
         language=config.llm.language,
     )

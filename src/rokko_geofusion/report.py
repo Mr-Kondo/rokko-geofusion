@@ -83,12 +83,25 @@ def build_payload(config: Config, roi: RoiGeometry) -> dict[str, Any]:
     }
 
     if terrain:
+        elevation = terrain.get("elevation") or {}
+        window = config.terrain.relief_window_cells
+        resolution = terrain.get("resolution_m")
         payload["terrain"] = {
             "area_m2": _round(terrain.get("area_m2")),
-            "resolution_m": terrain.get("resolution_m"),
+            "resolution_m": resolution,
             "elevation_m": _round(terrain.get("elevation")),
+            # Stated outright: a language model asked for "the height difference"
+            # otherwise quotes the local-relief maximum (tens of metres) instead
+            # of the range across the area (hundreds).
+            "elevation_range_m": (_round(elevation["max"] - elevation["min"])
+                                  if {"min", "max"} <= elevation.keys() else None),
             "slope_deg": _round(terrain.get("slope")),
-            "relief_m": _round(terrain.get("relief")),
+            "local_relief_m": _round(terrain.get("relief")),
+            "local_relief_definition": (
+                f"max minus min elevation inside a moving {window}x{window}-cell window"
+                + (f" ({window * resolution:g} m across)" if resolution else "")
+                + "; NOT the elevation range of the whole area (see elevation_range_m)"
+            ),
             "aspect": _round(terrain.get("aspect"), 3),
             "object_height_m": _round(terrain.get("object_height")),
             "unavailable": terrain.get("unavailable", {}),

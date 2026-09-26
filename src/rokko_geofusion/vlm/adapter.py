@@ -5,8 +5,10 @@ areas, slopes or ratios: those come from Python and are passed to the LLM stage
 separately. The prompt says so explicitly, and the response schema has no
 numeric fields.
 
-Providers are swappable. A provider that is not configured raises
-:class:`ConfigurationRequiredError` -- it never returns invented text.
+Providers are swappable: ``local`` runs an open-weights model in-process (see
+:mod:`rokko_geofusion.local_model`), ``anthropic`` / ``openai`` call an API. A
+provider that is not configured raises :class:`ConfigurationRequiredError` -- it
+never returns invented text.
 """
 
 from __future__ import annotations
@@ -70,6 +72,8 @@ class VlmAnalysis:
     provider: str = ""
     model: str = ""
     images: list[dict[str, Any]] = field(default_factory=list)
+    #: Device, dtype and why this model was chosen (local provider only).
+    runtime: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -109,7 +113,9 @@ def parse_json_response(text: str) -> tuple[dict[str, Any] | None, str]:
     could not be parsed, in which case the raw text is preserved by the caller
     rather than being replaced with a plausible-looking default.
     """
-    stripped = text.strip()
+    # Reasoning checkpoints emit <think>...</think> first; braces inside it
+    # would otherwise be mistaken for the answer.
+    stripped = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.DOTALL)
     if fenced:
         stripped = fenced.group(1)
@@ -246,14 +252,65 @@ class OpenAiVlm:
         return _to_analysis(text, provider=self.provider, model=self.model, images=images)
 
 
-def _to_analysis(text: str, *, provider: str, model: str,
-                 images: Sequence[VlmImage]) -> VlmAnalysis:
+def image_for_model(path: Path, max_side_px: int):
+    """Load a rendered view as RGB, shrunk so its longest side is ``max_side_px``."""
+    from PIL import Image
+
+    with Image.open(path) as source:
+        image = source.convert("RGB")
+    image.thumbnail((max_side_px, max_side_px), Image.Resampling.LANCZOS)
+    return image
+
+
+class LocalVlm:
+    """An open-weights vision-language model running on this machine."""
+
+    provider = "local"
+
+    def __init__(self, config: Config, *, generator: Any | None = None) -> None:
+        from rokko_geofusion.environment import detect_environment
+        from rokko_geofusion.local_model import LocalGenerator, choose_local_model
+
+        settings = config.vlm
+        self.max_output_tokens = settings.max_output_tokens
+        self.temperature = settings.temperature
+        self.image_max_side_px = config.local_models.image_max_side_px
+        if generator is None:
+            choice = choose_local_model(settings.model, config,
+                                        detect_environment(probe_packages=False))
+            generator = LocalGenerator(choice)
+        self._generator = generator
+        self.model = generator.choice.model_id
+
+    def analyze(self, images: Sequence[VlmImage], *, question: str) -> VlmAnalysis:
+        if not images:
+            raise UnsupportedError("no rendered views were produced for the VLM")
+        content: list[dict[str, Any]] = []
+        for image in images:
+            content.append({"type": "text", "text": f"{image.name}: {image.caption}"})
+            content.append({"type": "image",
+                            "image": image_for_model(image.path, self.image_max_side_px)})
+        content.append({"type": "text", "text": build_user_prompt(images, question)})
+
+        logger.info("VLM (local): %s, %d image(s) at <= %d px",
+                    self.model, len(images), self.image_max_side_px)
+        text = self._generator.generate(
+            system=SYSTEM_PROMPT, content=content,
+            max_new_tokens=self.max_output_tokens, temperature=self.temperature,
+        )
+        return _to_analysis(text, provider=self.provider, model=self.model, images=images,
+                            runtime=self._generator.describe())
+
+
+def _to_analysis(text: str, *, provider: str, model: str, images: Sequence[VlmImage],
+                 runtime: dict[str, Any] | None = None) -> VlmAnalysis:
     payload, reason = parse_json_response(text)
     if payload is None:
         logger.warning("VLM response could not be parsed (%s); keeping the raw text", reason)
         return VlmAnalysis(raw_text=text, parsed=False, provider=provider, model=model,
                            images=[image.to_dict() for image in images],
-                           uncertainties=[f"structured parsing failed: {reason}"])
+                           uncertainties=[f"structured parsing failed: {reason}"],
+                           runtime=runtime or {})
     return VlmAnalysis(
         terrain_description=str(payload.get("terrain_description", "")),
         land_cover_description=str(payload.get("land_cover_description", "")),
@@ -265,7 +322,18 @@ def _to_analysis(text: str, *, provider: str, model: str,
         provider=provider,
         model=model,
         images=[image.to_dict() for image in images],
+        runtime=runtime or {},
     )
+
+
+def require_api_model(section: str, provider: str, model: str) -> None:
+    """``auto`` only means something for the local provider."""
+    if model == "auto":
+        raise ConfigurationRequiredError(
+            f"{section}.model",
+            f"'auto' picks a local checkpoint, but {section}.provider is {provider!r}",
+            f"Name the {provider} model explicitly, e.g. {section}.model: claude-opus-5.",
+        )
 
 
 def load_vlm(config: Config) -> VlmAdapter:
@@ -275,9 +343,12 @@ def load_vlm(config: Config) -> VlmAdapter:
         raise ConfigurationRequiredError(
             "vlm.provider",
             "no vision model is configured",
-            "Set vlm.provider to 'anthropic' or 'openai' and provide the API key "
-            "named by vlm.api_key_env.",
+            "Set vlm.provider to 'local' (runs on this machine's GPU), or to "
+            "'anthropic' / 'openai' with the API key named by vlm.api_key_env.",
         )
+    if provider == "local":
+        return LocalVlm(config)
+    require_api_model("vlm", provider, config.vlm.model)
     if provider == "anthropic":
         return AnthropicVlm(config)
     if provider == "openai":

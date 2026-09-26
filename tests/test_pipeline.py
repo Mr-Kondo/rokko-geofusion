@@ -194,6 +194,25 @@ def test_notebook_cells_carry_the_ids_nbformat_4_5_requires(repo_root):
     assert all(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", cell_id) for cell_id in ids)
 
 
+def test_every_notebook_code_cell_compiles(repo_root):
+    """Regression: two generated cells had a raw newline inside a string literal.
+
+    IPython `!` shell lines are not Python, so they are blanked before compiling.
+    """
+    broken = []
+    for index, cell in enumerate(_notebook(repo_root)["cells"]):
+        if cell["cell_type"] != "code":
+            continue
+        source = "".join(
+            "\n" if line.lstrip().startswith("!") else line for line in cell["source"]
+        )
+        try:
+            compile(source, f"cell-{index:02d}", "exec")
+        except SyntaxError as exc:
+            broken.append(f"cell {index}: {exc.msg} at line {exc.lineno}: {exc.text!r}")
+    assert not broken, "\n".join(broken)
+
+
 def test_notebook_defines_no_functions_or_classes(repo_root):
     """CLAUDE.md rule 1: processing logic never lives in a notebook."""
     offenders = []

@@ -400,23 +400,64 @@ class PointCloudMlConfig(_Base):
     )
 
 
+class LocalModelTier(_Base):
+    min_memory_gb: float = Field(..., ge=0.0)
+    model_id: str
+
+
+class LocalModelConfig(_Base):
+    """Open-weights models run in-process with transformers (provider "local").
+
+    One vision-language checkpoint serves both the VLM and the LLM stage.
+    """
+
+    #: Used when a stage's ``model`` is ``auto``: the first tier whose floor the
+    #: detected accelerator memory meets (GPU VRAM; half the unified memory on
+    #: Apple silicon). Ordered largest first; the last tier is the fallback.
+    auto_tiers: list[LocalModelTier] = Field(
+        default_factory=lambda: [
+            LocalModelTier(min_memory_gb=30.0, model_id="Qwen/Qwen3-VL-8B-Instruct"),
+            LocalModelTier(min_memory_gb=12.0, model_id="Qwen/Qwen3-VL-4B-Instruct"),
+            LocalModelTier(min_memory_gb=0.0, model_id="Qwen/Qwen3-VL-2B-Instruct"),
+        ],
+        min_length=1,
+    )
+    #: Longest side an image is resized to before the model sees it. Qwen3-VL
+    #: spends one visual token per 32x32 px, and the checkpoint's own ceiling is
+    #: ~16 Mpx, so this is what actually bounds the token budget.
+    image_max_side_px: int = Field(1024, ge=64)
+
+
 class VlmConfig(_Base):
     enabled: bool = True
-    provider: Literal["anthropic", "openai", "none"] = "anthropic"
-    model: str = "claude-opus-5"
+    #: "local" runs an open-weights model in-process (no API key; nothing leaves
+    #: the machine); "anthropic" / "openai" call a hosted API.
+    provider: Literal["local", "anthropic", "openai", "none"] = "local"
+    #: ``auto`` (provider local only) picks from local_models.auto_tiers; else a
+    #: Hugging Face model id for local, or the API's model name.
+    model: str = "auto"
+    #: Only read by the API providers.
     api_key_env: str = "ANTHROPIC_API_KEY"
     max_images: int = 6
     max_output_tokens: int = 2048
-    temperature: float = 0.0
+    #: 0 means greedy decoding: a re-run on the same device and dtype
+    #: reproduces the same text.
+    temperature: float = Field(0.0, ge=0.0)
 
 
 class LlmConfig(_Base):
     enabled: bool = True
-    provider: Literal["anthropic", "openai", "none"] = "anthropic"
-    model: str = "claude-opus-5"
+    #: "local" runs an open-weights model in-process; see VlmConfig.provider.
+    provider: Literal["local", "anthropic", "openai", "none"] = "local"
+    #: ``auto`` (provider local only) picks from local_models.auto_tiers; else a
+    #: Hugging Face model id (vision-language or text-only) or the API's model.
+    model: str = "auto"
+    #: Only read by the API providers.
     api_key_env: str = "ANTHROPIC_API_KEY"
     max_output_tokens: int = 4096
-    temperature: float = 0.0
+    #: 0 means greedy decoding: a re-run on the same device and dtype
+    #: reproduces the same text.
+    temperature: float = Field(0.0, ge=0.0)
     language: Literal["ja", "en"] = "ja"
 
 
@@ -470,6 +511,7 @@ class Config(_Base):
     pointcloud_ml: PointCloudMlConfig = Field(default_factory=PointCloudMlConfig)
     vlm: VlmConfig = Field(default_factory=VlmConfig)
     llm: LlmConfig = Field(default_factory=LlmConfig)
+    local_models: LocalModelConfig = Field(default_factory=LocalModelConfig)
     visualization: VisualizationConfig = Field(default_factory=VisualizationConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)

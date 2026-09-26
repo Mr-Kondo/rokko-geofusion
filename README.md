@@ -49,7 +49,7 @@ change to `configs/rokko.yaml` and nothing else.
 | Segmentation | class + confidence raster | LoveDA SegFormer, 6 classes |
 | Fusion | per-cell feature table + fused class | 4,040,100 cells, 19 columns |
 | Point cloud ML | tile embeddings, clusters, metrics | 1680 tiles, 4 feature sets |
-| VLM / LLM | structured visual reading + report | requires an API key |
+| VLM / LLM | structured visual reading + report | local Qwen3-VL on the GPU, no API key |
 | Validation | V1–V6 spatial checks | 5 pass, 2 unavailable (need a DSM) |
 
 ## Install
@@ -368,24 +368,55 @@ row and printed by the CLI; it is not evidence that the model learned more.
 
 ## VLM and LLM
 
+By default both stages run an **open-weights model on this machine's GPU**
+(`provider: local`): Qwen3-VL, Apache-2.0. No API key is needed and no data
+leaves the runtime. One checkpoint serves both stages: the VLM gives it the
+rendered views, the LLM gives it text only.
+
+`model: auto` picks the size from the accelerator memory actually detected,
+using `local_models.auto_tiers` in the config:
+
+| detected memory | e.g. | model | weights |
+|---|---|---|---|
+| >= 30 GB | A100 40/80 GB | `Qwen/Qwen3-VL-8B-Instruct` | 17.5 GB |
+| >= 12 GB | T4 16 GB, L4 24 GB | `Qwen/Qwen3-VL-4B-Instruct` | 8.9 GB |
+| smaller, or CPU | | `Qwen/Qwen3-VL-2B-Instruct` | 4.3 GB |
+
+Memory means GPU VRAM on CUDA and half the unified memory on Apple silicon.
+The model runs in bf16 where the GPU supports it and in fp16 on a T4. Any
+Hugging Face id can replace `auto`; `llm.model` may also be a text-only model.
+
+* Decoding is **greedy** (temperature 0) rather than the sampling the
+  checkpoints ship with, so re-running an ROI reproduces the same text on the
+  same device and dtype: two bf16 runs on Apple silicon were byte-identical.
+  A different dtype changes the text (fp16 and bf16 runs differed), and some
+  CUDA kernels are non-deterministic, which was not measured here.
 * The VLM receives **rendered views only** (orthophoto, RGB cloud, elevation,
   slope, nDSM, segmentation) with captions carrying units and CRS. Its system
   prompt forbids numbers outright and its response schema has no numeric
   fields.
 * The LLM receives the Python-computed payload plus the VLM's qualitative
   reading, and must keep **Measured / Observed / Inferred / Uncertain** apart.
-* Providers (`anthropic`, `openai`) are swappable via config. Without an API
-  key the stage writes `status: "unavailable"` with the reason and the pipeline
-  continues — it never invents an analysis.
+* Every result records which model ran, on which device and dtype, and why that
+  model was chosen (`runtime` in `reports/*.json`).
+* A local model that fails (for example out of memory) writes
+  `status: "failed"` with advice, overwriting any earlier result, so a stale
+  analysis is never shown as this run's. Hosted APIs remain available:
+  `provider: anthropic` (or `openai`), the model name, and the API key.
 
 ```bash
-export ANTHROPIC_API_KEY=...
 python scripts/run_vlm.py --config configs/rokko.yaml
 python scripts/run_llm.py --config configs/rokko.yaml
-# Inspect exactly what would be sent, without calling anything:
+# Inspect exactly what would be sent, without running a model:
 python scripts/run_vlm.py --config configs/rokko.yaml --render-only
 python scripts/run_llm.py --config configs/rokko.yaml --prompt-only
+# Check that a model fits and answers on this machine (loads it for real):
+RGF_TEST_LOCAL_MODEL=Qwen/Qwen3-VL-8B-Instruct python -m pytest -q -m local_model
 ```
+
+If a model download stalls at 0 B/s, set `HF_HUB_DISABLE_XET=1` and run again:
+it switches Hugging Face from the Xet transfer to plain HTTP, and the download
+resumes from the partial files.
 
 ## Resources
 
@@ -401,6 +432,7 @@ tile size → point count → CPU**.
 | Apple M-series (MPS) | used for this development run; segmentation ≈ 13 s |
 | RAM | ~4 GB peak; the fusion table is streamed tile by tile |
 | Disk | ~215 MB per ROI (112 MB of it the fusion Parquet) |
+| Local VLM/LLM | first run downloads the model: 17.5 GB (8B, A100) or 8.9 GB (4B, T4) |
 
 Downloads for the default ROI: 13 elevation tiles, 306 imagery tiles, 4
 Overpass queries — all cached under `data/raw/_cache`.
@@ -422,8 +454,21 @@ Overpass queries — all cached under `data/raw/_cache`.
    accuracy.
 7. **Overpass is rate-limited** and its primary endpoint refused connections
    during development; mirrors are configured and responses are cached.
-8. **The live VLM/LLM path was not exercised** in the development environment
-   (no API key present); the adapters are tested against stubbed clients.
+8. **The local VLM/LLM was run end to end on Apple silicon only** (M5, MPS,
+   Qwen3-VL-4B in bf16): the VLM stage took 90 s for six views, the LLM stage
+   5.5 min, both answers parsed, the VLM output contained no numbers, and every
+   number in the report exists in the Python payload. The CUDA paths (8B in
+   bf16 on an A100, 4B in fp16 on a T4) use the same code but were not run here.
+   fp16 numerics were checked by converting the 4B model to fp16 on the device:
+   no NaN or garbled output, and the answer parsed. (Loading *directly* as fp16
+   on Apple silicon segfaults inside transformers' threaded weight conversion;
+   the pipeline loads bf16 there, so it is not affected.)
+   The hosted-API adapters are tested against stubbed clients only.
+9. **A small local model can mislabel a correct number.** In testing, the 4B
+   model quoted the local-relief maximum (50 m) as the area's elevation
+   difference (485 m). The payload now states the elevation range outright and
+   defines local relief; still read the Measured section against
+   `reports/analysis_payload.json`.
 
 ## Tests
 

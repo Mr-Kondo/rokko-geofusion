@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 """Integrate the measurements and the visual analysis into one GeoAI report.
 
-    export ANTHROPIC_API_KEY=...
     python scripts/run_llm.py --config configs/rokko.yaml
+
+By default the same local open-weights model as the VLM stage writes the
+report; set llm.provider to anthropic or openai to use a hosted model.
 
 The report separates Measured (computed here), Observed (seen by the vision
 model), Inferred (the language model's reasoning) and Uncertain. The language
@@ -17,7 +19,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rokko_geofusion.crs import roi_from_config  # noqa: E402
-from rokko_geofusion.exceptions import ConfigurationRequiredError  # noqa: E402
+from rokko_geofusion.exceptions import (  # noqa: E402
+    ConfigurationRequiredError,
+    GeoFusionError,
+)
 from rokko_geofusion.llm.report import run_llm_analysis  # noqa: E402
 from rokko_geofusion.report import write_payload  # noqa: E402
 from rokko_geofusion.utils.cli import build_parser, init_stage  # noqa: E402
@@ -31,6 +36,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     ctx = init_stage(args, stage_name="run_llm")
     config, logger = ctx.config, ctx.logger
+
+    result_path = config.paths.reports / "geoai_report.json"
+    markdown_path = config.paths.reports / "geoai_report.md"
+    if not args.prompt_only:
+        # Replace the previous report before anything can fail, so that no
+        # outcome -- not even an unanticipated exception -- leaves an earlier
+        # run's report standing as this run's.
+        write_json(result_path, {"status": "incomplete",
+                                 "reason": "the LLM run started but did not finish"})
+        markdown_path.unlink(missing_ok=True)
 
     roi = roi_from_config(config)
     payload_path, payload = write_payload(config, roi)
@@ -69,24 +84,30 @@ def main(argv: list[str] | None = None) -> int:
         report = run_llm_analysis(config, payload, vlm_analysis)
     except ConfigurationRequiredError as exc:
         logger.warning("LLM not run: %s", exc)
-        write_json(config.paths.reports / "geoai_report.json",
-                   {"status": "unavailable", "reason": str(exc)})
+        write_json(result_path, {"status": "unavailable", "reason": str(exc)})
         return 0
+    except GeoFusionError as exc:
+        logger.error("LLM failed: %s", exc)
+        write_json(result_path, {"status": "failed", "reason": str(exc)})
+        return 1
 
     result = report.to_dict()
     result["status"] = "ok" if report.parsed else "unparsed"
     result["used_visual_analysis"] = vlm_analysis is not None
-    write_json(config.paths.reports / "geoai_report.json", result)
+    write_json(result_path, result)
 
-    markdown_path = config.paths.reports / "geoai_report.md"
+    if not report.parsed:
+        # A Markdown file of empty sections would read like a finished report.
+        logger.warning("the response was not valid JSON; kept the raw text in %s and "
+                       "wrote no Markdown report", result_path)
+        return 0
+
     markdown_path.write_text(report.to_markdown(roi.key), encoding="utf-8")
     logger.info("report -> %s", markdown_path)
-
-    if report.parsed:
-        logger.info("summary: %s", report.summary[:300])
-        logger.info("measured=%d observed=%d inferred=%d uncertain=%d",
-                    len(report.measured), len(report.observed),
-                    len(report.inferred), len(report.uncertain))
+    logger.info("summary: %s", report.summary[:300])
+    logger.info("measured=%d observed=%d inferred=%d uncertain=%d",
+                len(report.measured), len(report.observed),
+                len(report.inferred), len(report.uncertain))
     return 0
 
 

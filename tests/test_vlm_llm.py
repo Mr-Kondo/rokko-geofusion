@@ -103,6 +103,9 @@ def test_unparseable_response_keeps_the_raw_text(tmp_path):
 # --- provider selection -----------------------------------------------------
 def test_missing_api_key_is_a_configuration_error(config, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    for section in (config.vlm, config.llm):
+        section.provider = "anthropic"
+        section.model = "claude-opus-5"
     with pytest.raises(ConfigurationRequiredError, match="ANTHROPIC_API_KEY"):
         load_vlm(config)
     with pytest.raises(ConfigurationRequiredError, match="ANTHROPIC_API_KEY"):
@@ -327,6 +330,11 @@ def test_payload_includes_terrain_when_present(config):
     })
     payload = build_payload(config, roi)
     assert payload["terrain"]["elevation_m"]["mean"] == 154.24
+    # The range across the area is stated explicitly, and local relief is
+    # defined so it cannot be mistaken for it.
+    assert payload["terrain"]["elevation_range_m"] == pytest.approx(485.25, abs=0.01)
+    assert "NOT the elevation range" in payload["terrain"]["local_relief_definition"]
+    assert "25 m across" in payload["terrain"]["local_relief_definition"]
     assert payload["terrain"]["object_height_m"] is None
     assert "ndsm" in payload["terrain"]["unavailable"]
     assert "terrain" not in payload["missing"]

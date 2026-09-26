@@ -36,3 +36,19 @@ def config(tmp_path: Path):
         ],
     )
     return cfg
+
+
+@pytest.fixture(autouse=True)
+def _refuse_real_model_loading(request, monkeypatch):
+    """A real checkpoint means gigabytes of download; unit tests inject a fake.
+
+    Tests marked ``local_model`` opt out, and those only run when
+    RGF_TEST_LOCAL_MODEL names a model.
+    """
+    if request.node.get_closest_marker("local_model"):
+        return
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("unit tests must not load a real model; inject a generator")
+
+    monkeypatch.setattr("rokko_geofusion.local_model.LocalGenerator.__init__", refuse)
