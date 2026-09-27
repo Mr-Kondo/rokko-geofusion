@@ -54,6 +54,10 @@ class FeatureSetResult:
     cluster_sizes: dict[str, int]
     train_seconds: float
     device: str
+    #: What was actually used: these follow the resource profile, so a CPU run
+    #: and a GPU run of the same config differ here and nowhere else.
+    num_points: int = 0
+    batch_size: int = 0
     caveat: str | None = None
     model: dict[str, Any] = field(default_factory=dict)
 
@@ -85,6 +89,7 @@ def train_feature_set(
     settings = config.pointcloud_ml
     device = profile.device
     batch_size = max(2, min(profile.pc_batch_size or settings.batch_size, len(dataset)))
+    num_points = profile.pc_num_points or dataset.num_points
     in_channels = feature_dimension(feature_set, len(config.segmentation.classes))
 
     feature_dropout = float(settings.augment_feature_dropout)
@@ -97,13 +102,15 @@ def train_feature_set(
     loss_curve: list[float] = []
     started = time.perf_counter()
 
+    logger.info("%-26s %d tiles x %d points, batch %d, on %s",
+                feature_set, n_tiles, num_points, batch_size, device)
     model.train()
     for epoch in range(settings.epochs):
         order = rng.permutation(n_tiles)
         epoch_losses: list[float] = []
         for start in range(0, n_tiles - batch_size + 1, batch_size):
             indices = order[start:start + batch_size]
-            raw = dataset.batch(indices, feature_set, rng=rng)
+            raw = dataset.batch(indices, feature_set, rng=rng, num_points=num_points)
             view_a = np.stack([augment(tile, rng, feature_dropout=feature_dropout)
                                for tile in raw])
             view_b = np.stack([augment(tile, rng, feature_dropout=feature_dropout)
@@ -139,7 +146,7 @@ def train_feature_set(
     with torch.no_grad():
         for start in range(0, n_tiles, batch_size):
             indices = list(range(start, min(start + batch_size, n_tiles)))
-            raw = dataset.batch(indices, feature_set, rng=eval_rng)
+            raw = dataset.batch(indices, feature_set, rng=eval_rng, num_points=num_points)
             tensor = torch.from_numpy(raw).to(device)
             if tensor.shape[0] == 1:
                 # BatchNorm needs more than one sample in training mode only;
@@ -161,6 +168,8 @@ def train_feature_set(
         cluster_sizes={},
         train_seconds=train_seconds,
         device=device,
+        num_points=num_points,
+        batch_size=batch_size,
         model={**describe_model(model), "augment_feature_dropout": feature_dropout},
     )
     return result, tile_embeddings
@@ -196,6 +205,26 @@ def evaluate_embeddings(
     return labels, silhouette, ami, sizes
 
 
+def smaller_pointcloud_profile(profile: ResourceProfile) -> ResourceProfile | None:
+    """The next rung of the OOM ladder that changes what point cloud ML uses.
+
+    The shared ladder also has rungs that only shrink the segmentation tile;
+    those change nothing here, so they are stepped over rather than mistaken
+    for the end of the ladder. ``None`` once the ladder is exhausted.
+    """
+    def used_here(candidate: ResourceProfile) -> tuple[str, int, int]:
+        return candidate.device, candidate.pc_batch_size, candidate.pc_num_points
+
+    step = profile
+    while True:
+        following = step.downscale()
+        if following == step:
+            return None
+        if used_here(following) != used_here(profile):
+            return following
+        step = following
+
+
 def run_comparison(
     config: Config,
     *,
@@ -220,7 +249,6 @@ def run_comparison(
     current = profile
 
     for feature_set in dataset.feature_sets:
-        attempts = 0
         while True:
             try:
                 result, embeddings = train_feature_set(
@@ -228,12 +256,10 @@ def run_comparison(
                 )
                 break
             except ResourceError as exc:
-                attempts += 1
-                previous = (current.device, current.pc_batch_size, current.pc_num_points)
-                current = current.downscale()
-                if attempts > 4 or (current.device, current.pc_batch_size,
-                                    current.pc_num_points) == previous:
+                smaller = smaller_pointcloud_profile(current)
+                if smaller is None:
                     raise
+                current = smaller
                 logger.warning("%s -- retrying with device=%s batch=%d points=%d",
                                exc, current.device, current.pc_batch_size,
                                current.pc_num_points)

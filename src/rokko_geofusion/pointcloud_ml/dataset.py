@@ -143,7 +143,13 @@ class FusionTileDataset:
         unknown = set(self.feature_sets) - set(FEATURE_SETS)
         if unknown:
             raise UnsupportedError(f"unknown feature set(s): {sorted(unknown)}")
+        #: Default points per sample; training passes the resource profile's
+        #: count instead, so a CPU samples fewer points than a large GPU.
         self.num_points = int(num_points or settings.num_points)
+        #: Which tiles exist must not depend on the hardware, or a CPU run and
+        #: a GPU run would compare different tile sets. So the inclusion
+        #: threshold follows the configured count, not the sampled one.
+        self.min_points_per_tile = max(32, int(settings.num_points) // 16)
         self.tile_size_m = float(tile_size_m or settings.tile_size_m)
         self.n_image_classes = len(config.segmentation.classes)
         self.rng = np.random.default_rng(seed)
@@ -182,7 +188,7 @@ class FusionTileDataset:
         groups = np.split(order, boundaries)
         unique_keys = sorted_key[np.concatenate([[0], boundaries])] if len(order) else []
 
-        minimum = max(32, self.num_points // 16)
+        minimum = self.min_points_per_tile
         self.tiles: list[np.ndarray] = []
         self.tile_origins: list[tuple[float, float]] = []
         for tile_key, indices in zip(unique_keys, groups, strict=True):
@@ -224,17 +230,21 @@ class FusionTileDataset:
         self._voxel_cache[index] = selected
         return selected
 
-    def sample(self, index: int, *, rng: np.random.Generator | None = None) -> TileSample:
+    def sample(
+        self,
+        index: int,
+        *,
+        rng: np.random.Generator | None = None,
+        num_points: int | None = None,
+    ) -> TileSample:
         """Voxel-downsample a tile, then sample a fixed number of points."""
         rng = rng or self.rng
         indices = self.tiles[index]
         selected = self._voxel_indices(index)
         available = int(selected.size)
 
-        if available >= self.num_points:
-            chosen = rng.choice(selected, size=self.num_points, replace=False)
-        else:
-            chosen = rng.choice(selected, size=self.num_points, replace=True)
+        count = num_points or self.num_points
+        chosen = rng.choice(selected, size=count, replace=available < count)
 
         columns = {name: values[chosen] for name, values in self.columns.items()}
         features = {
@@ -260,9 +270,13 @@ class FusionTileDataset:
         feature_set: str,
         *,
         rng: np.random.Generator | None = None,
+        num_points: int | None = None,
     ) -> np.ndarray:
         """``(B, num_points, channels)`` for one feature set."""
-        return np.stack([self.sample(i, rng=rng).features[feature_set] for i in indices])
+        return np.stack([
+            self.sample(i, rng=rng, num_points=num_points).features[feature_set]
+            for i in indices
+        ])
 
     def dominant_classes(self) -> np.ndarray:
         """Majority fused class per tile -- evaluation only, never an input."""

@@ -56,13 +56,15 @@ def main(argv: list[str] | None = None) -> int:
     }
     write_json(config.paths.metrics / "pointcloud_ml.json", summary)
 
-    header = f"{'feature set':<28}{'ch':>4}{'loss':>9}{'silhouette':>13}{'AMI':>9}{'secs':>8}"
+    header = (f"{'feature set':<28}{'ch':>4}{'pts':>6}{'batch':>6}{'loss':>9}"
+              f"{'silhouette':>13}{'AMI':>9}{'secs':>8}")
     logger.info("%s", header)
     logger.info("%s", "-" * len(header))
     for result in outcome["results"]:
         logger.info(
-            "%-28s%4d%9.4f%13s%9s%8.1f",
-            result["feature_set"], result["in_channels"], result["final_loss"],
+            "%-28s%4d%6d%6d%9.4f%13s%9s%8.1f",
+            result["feature_set"], result["in_channels"], result["num_points"],
+            result["batch_size"], result["final_loss"],
             f"{result['silhouette']:.3f}" if result["silhouette"] is not None else "n/a",
             f"{result['adjusted_mutual_information']:.3f}"
             if result["adjusted_mutual_information"] is not None else "n/a",

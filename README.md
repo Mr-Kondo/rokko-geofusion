@@ -341,7 +341,16 @@ is reported. The encoder is trained self-supervised (NT-Xent over augmented
 views) and evaluated by silhouette score and by adjusted mutual information
 against the independently derived fused classes.
 
-Result on the default ROI (1680 tiles of 50 m, 4096 points each, 20 epochs):
+The number of points sampled per tile follows the detected hardware
+(`environment.make_resource_profile`), capped by `pointcloud_ml.num_points`:
+4096 on a GPU with 9 GB or more, such as a T4, L4 or A100; 2048 on Apple
+silicon; 1024 on a CPU. The out-of-memory ladder lowers it further (batch size,
+then point count, then the CPU). Each result records the `num_points` and
+`batch_size` actually used; the set of tiles itself does not depend on the
+hardware, so runs on different machines compare the same tiles.
+
+Result on the default ROI (1680 tiles of 50 m, 4096 points each, as a GPU
+runtime samples them, 20 epochs):
 
 | feature set | channels | final loss | silhouette | AMI vs fused class |
 |---|---|---|---|---|
@@ -427,8 +436,9 @@ tile size → point count → CPU**.
 
 | Configuration | Behaviour on the default 2 × 2 km ROI |
 |---|---|
-| CPU only | works; segmentation is the slow step (tiles 384 px, batch 1) |
-| Colab T4 / L4 (14–24 GB) | full pipeline comfortably |
+| CPU only | works but slow: point cloud ML is the long step (1024 points per tile; a Colab CPU runtime took 3.2 h before the profile's point count was honoured), and the local VLM/LLM falls back to the 2B model |
+| Colab A100 80 GB | measured end to end: fusion 146 s, point cloud ML 526 s, VLM 87 s and LLM 54 s with the 8B model |
+| Colab T4 / L4 (14–24 GB) | the 4B model in fp16 / bf16; not measured on these GPUs |
 | Apple M-series (MPS) | used for this development run; segmentation ≈ 13 s |
 | RAM | ~4 GB peak; the fusion table is streamed tile by tile |
 | Disk | ~215 MB per ROI (112 MB of it the fusion Parquet) |
@@ -454,16 +464,16 @@ Overpass queries — all cached under `data/raw/_cache`.
    accuracy.
 7. **Overpass is rate-limited** and its primary endpoint refused connections
    during development; mirrors are configured and responses are cached.
-8. **The local VLM/LLM was run end to end on Apple silicon only** (M5, MPS,
-   Qwen3-VL-4B in bf16): the VLM stage took 90 s for six views, the LLM stage
-   5.5 min, both answers parsed, the VLM output contained no numbers, and every
-   number in the report exists in the Python payload. The CUDA paths (8B in
-   bf16 on an A100, 4B in fp16 on a T4) use the same code but were not run here.
-   fp16 numerics were checked by converting the 4B model to fp16 on the device:
-   no NaN or garbled output, and the answer parsed. (Loading *directly* as fp16
-   on Apple silicon segfaults inside transformers' threaded weight conversion;
-   the pipeline loads bf16 there, so it is not affected.)
-   The hosted-API adapters are tested against stubbed clients only.
+8. **The local VLM/LLM has run end to end on two machines.** On a Colab A100
+   80 GB the tier rule picked Qwen3-VL-8B in bf16: VLM 87 s, LLM 54 s, both
+   answers parsed, and every number in the report exists in the payload, with
+   the elevation range and the local relief correctly told apart. On Apple
+   silicon (4B, bf16) the VLM took 90 s and the LLM 5.5 min, passing the same
+   checks. The T4 path (4B in fp16) has not run on a T4; fp16 numerics were
+   checked by converting the 4B model to fp16 on the device: no NaN or garbled
+   output, and the answer parsed. (Loading *directly* as fp16 on Apple silicon
+   segfaults inside transformers' threaded weight conversion; the pipeline
+   loads bf16 there, so it is not affected.)
 9. **A small local model can mislabel a correct number.** In testing, the 4B
    model quoted the local-relief maximum (50 m) as the area's elevation
    difference (485 m). The payload now states the elevation range outright and

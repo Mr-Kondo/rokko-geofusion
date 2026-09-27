@@ -283,3 +283,112 @@ def test_comparison_is_refused_when_disabled(fusion_table):
     config.pointcloud_ml.enabled = False
     with pytest.raises(UnsupportedError):
         run_comparison(config, profile=make_resource_profile(config), table_path=path)
+
+
+# --- the resource profile really drives point sampling ------------------------------
+def _profile(**overrides):
+    from rokko_geofusion.environment import ResourceProfile
+
+    base = dict(device="cpu", tier="test", seg_tile_px=512, seg_batch_size=1,
+                pc_num_points=32, pc_batch_size=2, max_points_in_memory=1_000_000,
+                http_max_workers=1, display_points=1000)
+    base.update(overrides)
+    return ResourceProfile(**base)
+
+
+def test_training_samples_the_profiles_point_count(fusion_table, monkeypatch):
+    """Regression: the dataset always sampled the config's count (4096 in the
+    default config), so a CPU runtime trained on 4x more points than its profile
+    allows and the Colab CPU run took 3.2 hours."""
+    from rokko_geofusion.pointcloud_ml.train import train_feature_set
+
+    config, path = fusion_table                   # config asks for 64 points
+    dataset = FusionTileDataset(config, path, feature_sets=["xyz"])
+    seen: list[tuple[int, ...]] = []
+    original = FusionTileDataset.batch
+
+    def spy(self, *args, **kwargs):
+        array = original(self, *args, **kwargs)
+        seen.append(array.shape)
+        return array
+
+    monkeypatch.setattr(FusionTileDataset, "batch", spy)
+    result, _ = train_feature_set(config, dataset, "xyz", profile=_profile(pc_num_points=32))
+
+    assert {shape[1] for shape in seen} == {32}   # training and embedding passes
+    assert result.num_points == 32
+    assert result.batch_size == 2
+
+
+def test_the_tile_set_does_not_depend_on_the_sample_count(fusion_table, tmp_path):
+    """A CPU run and a GPU run must compare the same tiles.
+
+    The fixture's tiles are all full (400 points), so an 80-point edge strip is
+    added: it passes a threshold derived from 16 sampled points (32) but not one
+    derived from 2048 (128), which is exactly where the old code diverged.
+    """
+    import pandas as pd
+
+    config, path = fusion_table
+    frame = pd.read_parquet(path)
+    edge = frame[frame["x"] < frame["x"].min() + 4].copy()      # 4 columns x 80 rows
+    edge["x"] = edge["x"] + 80.0                                # beyond the last tile
+    extended = tmp_path / "extended.parquet"
+    pd.concat([frame, edge], ignore_index=True).to_parquet(extended, index=False)
+
+    few = FusionTileDataset(config, extended, feature_sets=["xyz"], num_points=16)
+    many = FusionTileDataset(config, extended, feature_sets=["xyz"], num_points=2048)
+    assert any(len(indices) == 80 for indices in few.tiles)     # the edge tiles exist
+    assert few.tile_origins == many.tile_origins
+
+
+def test_the_ladder_steps_over_rungs_that_only_touch_segmentation():
+    from rokko_geofusion.pointcloud_ml.train import smaller_pointcloud_profile
+
+    # Batch already 1: the next shared rung only halves seg_tile_px, which
+    # changes nothing here. It used to end the ladder at that point.
+    start = _profile(device="cuda", seg_batch_size=1, seg_tile_px=1024,
+                     pc_batch_size=1, pc_num_points=4096)
+    following = smaller_pointcloud_profile(start)
+    assert following is not None
+    assert following.pc_num_points == 2048
+    assert following.device == "cuda"
+
+
+def test_the_ladder_ends_on_the_cpu_and_then_reports_exhaustion():
+    from rokko_geofusion.pointcloud_ml.train import smaller_pointcloud_profile
+
+    rungs = []
+    current = _profile(device="cuda", seg_batch_size=4, pc_batch_size=8, pc_num_points=4096)
+    while (current := smaller_pointcloud_profile(current)) is not None:
+        rungs.append((current.device, current.pc_batch_size, current.pc_num_points))
+        assert len(rungs) < 50, "the ladder must terminate"
+    assert rungs[-1][0] == "cpu"
+    assert (rungs[0][1], rungs[0][2]) == (4, 4096)          # batch shrinks first
+    assert any(points < 4096 for _, _, points in rungs)     # then the point count
+
+
+def test_out_of_memory_reaches_the_point_count_rung(fusion_table, monkeypatch):
+    """Regression: after the batch reached 1 the retry loop gave up instead of
+    lowering the point count or falling back to the CPU."""
+    import rokko_geofusion.pointcloud_ml.train as train
+    from rokko_geofusion.exceptions import ResourceError
+
+    config, path = fusion_table
+    attempts: list[tuple[str, int, int]] = []
+    real = train.train_feature_set
+
+    def picky(config, dataset, feature_set, *, profile, seed=0):
+        attempts.append((profile.device, profile.pc_batch_size, profile.pc_num_points))
+        if profile.pc_num_points > 2048:
+            raise ResourceError("simulated out of memory")
+        return real(config, dataset, feature_set, profile=profile, seed=seed)
+
+    monkeypatch.setattr(train, "train_feature_set", picky)
+    start = _profile(device="cpu", seg_batch_size=2, seg_tile_px=512,
+                     pc_batch_size=2, pc_num_points=4096)
+    outcome = train.run_comparison(config, profile=start, table_path=path,
+                                   feature_sets=["xyz"])
+    assert outcome["results"][0]["num_points"] == 2048
+    assert attempts[-1][2] == 2048
+    assert len(attempts) > 2          # it walked past the batch-only rungs
