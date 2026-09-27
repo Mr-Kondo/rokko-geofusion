@@ -257,13 +257,36 @@ fingerprint.
 | **V3** | is DSM ≥ DEM? | *unavailable* — no DSM configured |
 | **V4** | do mapped buildings sit on high nDSM? | *unavailable* — needs a DSM |
 | **V5** | does the RGB cloud from above match the orthophoto? | **pass** — 161,604 points, **0 uncoloured**, R = 1.0000 |
-| **V6** | does re-running reproduce the result? | **pass** — stable digest |
+| **V6** | does re-running reproduce the result? | **pass** — bit-identical recompute; results digest `5e8cd2bb14ce6077` |
 | **SEG** | do the predicted classes agree with independent OSM geometry? | **pass** — building recall 0.78, road precision 0.78 |
 
 ## Reproducibility
 
-`V6` re-derives the terrain products inside one run and compares digests. Two
-stages were additionally measured across *separate* runs on the same machine:
+`V6` reports two digests, because "the same result" means different things on
+one machine and across machines:
+
+| digest | hashes | compare it |
+|---|---|---|
+| bitwise (`bitwise_digest`) | the raw bytes of slope and aspect, computed twice | within one machine — this is the pass/fail test |
+| results (`digest`) | area-wide float64 count / mean / std of elevation, slope and local relief, rounded to 3 decimals, plus the config fingerprint and the grid | **across machines** — Colab and a laptop should print the same value |
+
+Raw float bytes are not portable: resampling and `libm` differ in the last bit
+between CPUs and library builds, so the bitwise digest of the same ROI differs
+between Colab and macOS even with an identical config. Rounded *per-cell*
+statistics are not portable either — GSI heights are quantised to 1 cm, so a
+median or a maximum can sit exactly on a rounding boundary. Area-wide means and
+standard deviations average that noise away: under simulated last-bit noise
+(DEM ±1/±4/±16 ulp, slope ±2 ulp) the results digest was identical in 20 of 20
+trials, while a 1 cm shift of the whole DEM, a 1 m change over part of the
+area, or any config change still alters it. The hashed inputs are stored as
+`digest_inputs` in `validation.json`, so two runs that disagree can be diffed
+field by field. Aspect is treated as undefined where the gradient is below
+`1e-4` (about 0.006°), not only where it is exactly zero, so that numerically
+flat ground cannot flip between "flat" and a random direction.
+
+The default ROI gives results digest `5e8cd2bb14ce6077` (config fingerprint
+`d7f8420a356ecdaa`). Two stages were additionally measured across *separate*
+runs on the same machine:
 
 | stage | repeat-run result |
 |---|---|

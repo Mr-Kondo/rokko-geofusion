@@ -68,11 +68,21 @@ def slope(elevation: np.ndarray, cell_size: float, *, units: str = "degrees") ->
     return np.where(np.isfinite(elevation), result, np.nan).astype(np.float32)
 
 
+#: Gradient (rise over run) below which a cell counts as flat: 1e-4 is 1 cm over
+#: 100 m, about 0.006 degrees. Such a slope has no meaningful downhill
+#: direction. Treating only an exactly-zero gradient as flat made aspect depend
+#: on the last bit of the elevation: a 1-ulp change -- the size of the
+#: difference between two machines' resampling -- turned flat cells into
+#: arbitrary bearings and moved the aspect statistics.
+FLAT_GRADIENT = 1e-4
+
+
 def aspect(elevation: np.ndarray, cell_size: float) -> np.ndarray:
     """Down-slope compass direction in degrees (0 = north, 90 = east).
 
-    Flat cells (zero gradient) are returned as NaN rather than an arbitrary
-    direction, so they can be excluded from circular statistics.
+    Flat cells (gradient below ``FLAT_GRADIENT``) are returned as NaN rather
+    than an arbitrary direction, so they can be excluded from circular
+    statistics.
     """
     dz_dx, dz_dy = _horn_gradients(elevation, cell_size)
     # dz_dy grows southwards; the northward derivative is its negative.
@@ -81,7 +91,7 @@ def aspect(elevation: np.ndarray, cell_size: float) -> np.ndarray:
     # a compass bearing gives atan2(east, north) of the descent direction.
     bearing = np.degrees(np.arctan2(-dz_dx, -dz_dy_north))
     bearing = np.mod(bearing, 360.0)
-    flat = (np.abs(dz_dx) < 1e-12) & (np.abs(dz_dy) < 1e-12)
+    flat = np.hypot(dz_dx, dz_dy) < FLAT_GRADIENT
     bearing = np.where(flat | ~np.isfinite(elevation), np.nan, bearing)
     return bearing.astype(np.float32)
 

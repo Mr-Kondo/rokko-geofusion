@@ -13,6 +13,7 @@ silently skipped and never reported as a pass.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -298,6 +299,57 @@ def check_v5_cloud_matches_imagery(config: Config, roi: RoiGeometry) -> CheckRes
     )
 
 
+#: Precision of the portable V6 digest. It hashes area-wide means and standard
+#: deviations, accumulated in float64, never single-cell values: the GSI source
+#: heights are quantised at 1 cm, so medians and extremes routinely sit exactly
+#: on a rounding boundary (the median of an even number of cells is the average
+#: of two such heights), and the last-bit difference between two machines'
+#: resampling or maths libraries flips them. An area-wide mean moves by ~1e-8
+#: under that noise, far below this precision.
+_DIGEST_DECIMALS = 3
+
+
+def _moments(values: np.ndarray) -> dict[str, float | int]:
+    finite = values[np.isfinite(values)].astype(np.float64)
+    if finite.size == 0:
+        return {"count": 0, "mean": None, "std": None}
+
+    def rounded(number: float) -> float:
+        value = round(float(number), _DIGEST_DECIMALS)
+        return 0.0 if value == 0 else value      # -0.0 would serialise differently
+
+    return {"count": int(finite.size), "mean": rounded(finite.mean()),
+            "std": rounded(finite.std())}
+
+
+def results_digest(config: Config, roi: RoiGeometry, dem: np.ndarray) -> tuple[str, dict]:
+    """Digest of the terrain results that is comparable between machines.
+
+    Covers the configuration, the grid and the area-wide moments of elevation,
+    slope and local relief. A change confined to a few cells may not move it;
+    the bitwise digest in V6 catches those on one machine. Returns
+    ``(digest, inputs)``, ``inputs`` being exactly what was hashed so that two
+    machines whose digests differ can be compared number by number.
+    """
+    from rokko_geofusion.terrain.analysis import relief, slope
+
+    # The configured grid, not the one read back from the raster: its CRS
+    # string would depend on the PROJ version rendering it.
+    grid = roi.grid(config.lidar.resolution_m)
+    fields = {
+        "elevation_m": dem,
+        "slope": slope(dem, grid.resolution_m, units=config.terrain.slope_units),
+        "local_relief_m": relief(dem, config.terrain.relief_window_cells),
+    }
+    inputs = {
+        "config_fingerprint": config.fingerprint(),
+        "grid": grid.to_dict(),
+        "moments": {name: _moments(values) for name, values in fields.items()},
+    }
+    canonical = json.dumps(inputs, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16], inputs
+
+
 def check_v6_reproducibility(config: Config, roi: RoiGeometry) -> CheckResult:
     """V6: re-running the same ROI produces identical results."""
     title = "recomputation is deterministic"
@@ -310,25 +362,23 @@ def check_v6_reproducibility(config: Config, roi: RoiGeometry) -> CheckResult:
     grid = grid_from_raster(dem_path)
     dem, _ = read_raster(dem_path, band=1)
 
-    def digest() -> str:
-        payload = [
-            slope(dem, grid.resolution_m, units=config.terrain.slope_units).tobytes(),
-            aspect(dem, grid.resolution_m).tobytes(),
-            str(roi.grid(config.lidar.resolution_m).to_dict()).encode(),
-            config.fingerprint().encode(),
-        ]
+    def bitwise_digest() -> str:
+        """Strict and machine-specific: the pass/fail criterion within one run."""
         hasher = hashlib.sha256()
-        for item in payload:
-            hasher.update(item)
+        hasher.update(slope(dem, grid.resolution_m, units=config.terrain.slope_units).tobytes())
+        hasher.update(aspect(dem, grid.resolution_m).tobytes())
         return hasher.hexdigest()
 
-    first, second = digest(), digest()
+    first, second = bitwise_digest(), bitwise_digest()
+    digest, inputs = results_digest(config, roi, dem)
     status = "pass" if first == second else "fail"
     return CheckResult(
         "V6", title, status,
-        f"terrain derivatives + grid + config digest is stable: {first[:16]}",
-        {"digest": first, "stable": first == second,
-         "config_fingerprint": config.fingerprint()},
+        ("terrain derivatives recompute bit-identically on this machine; "
+         if status == "pass" else "terrain derivatives DIFFER between two computations; ")
+        + f"results digest {digest} (area-wide moments; comparable across machines)",
+        {"digest": digest, "digest_inputs": inputs, "stable": first == second,
+         "bitwise_digest": first[:16], "config_fingerprint": config.fingerprint()},
     )
 
 

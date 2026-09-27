@@ -48,7 +48,9 @@ value is *spatial correctness and reproducibility*, not "the cell ran".
   `ResourceProfile.downscale()` for the OOM ladder
   (batch → tile → point count → CPU). No code may assume a specific GPU.
 - **Determinism.** `utils.seed.set_global_seed` is called by every stage;
-  re-running one ROI must reproduce byte-comparable statistics (V6).
+  re-running one ROI must reproduce bit-identical terrain products on one
+  machine, and the same V6 results digest (rounded area-wide moments) on any
+  machine. Never make a cross-machine comparison depend on raw float bytes.
 - **Numeric work belongs in Python.** VLM/LLM adapters interpret and explain;
   they never compute areas, slopes, ratios or elevations.
 

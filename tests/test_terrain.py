@@ -98,6 +98,24 @@ def test_flat_ground_has_no_aspect():
     np.testing.assert_allclose(_interior(slope(flat, CELL)), 0.0, atol=1e-9)
 
 
+def test_numerically_flat_ground_has_no_aspect():
+    """Regression: only an exactly-zero gradient counted as flat, so a 1-ulp
+    change in elevation gave flat cells an arbitrary bearing."""
+    from rokko_geofusion.terrain.analysis import FLAT_GRADIENT
+
+    flat = np.full((11, 11), 150.0, np.float32)
+    rng = np.random.default_rng(0)
+    towards = np.where(rng.random(flat.shape) < 0.5, -np.inf, np.inf).astype(np.float32)
+    jittered = np.nextafter(flat, towards)            # +-1 ulp, like a resampling difference
+    assert np.isnan(_interior(aspect(jittered, CELL))).all()
+
+    # A genuine gentle slope, ten times the threshold, keeps its direction.
+    gentle = _plane(10 * FLAT_GRADIENT, 0.0)
+    values = _interior(aspect(gentle, CELL))
+    assert np.isfinite(values).all()
+    assert np.allclose(values, 270.0, atol=1e-2)      # rises to the east -> faces west
+
+
 def test_aspect_stays_within_the_compass_range():
     rng = np.random.default_rng(3)
     noisy = rng.normal(100.0, 5.0, size=(30, 30)).astype(np.float32)

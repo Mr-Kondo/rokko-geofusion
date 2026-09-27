@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 
@@ -176,6 +178,91 @@ def test_v6_is_deterministic(scene):
     assert result.status == "pass"
     assert result.measurements["stable"] is True
     assert result.measurements["config_fingerprint"] == config.fingerprint()
+    assert len(result.measurements["digest"]) == 16
+    assert result.measurements["digest"] in result.detail
+    # What was hashed is kept, so two machines can be compared number by number.
+    json.dumps(result.measurements["digest_inputs"])
+    assert set(result.measurements["digest_inputs"]["moments"]) == {
+        "elevation_m", "slope", "local_relief_m"}
+
+
+def test_v6_fails_when_recomputation_is_not_bit_identical(scene, monkeypatch):
+    import rokko_geofusion.terrain.analysis as terrain
+
+    config, roi = scene
+    grid = roi.grid(config.lidar.resolution_m)
+    write_grid_raster(config.paths.interim / "dem.tif",
+                      np.full(grid.shape, 100.0, np.float32), grid, nodata=float("nan"))
+    real = terrain.slope
+    noise = np.random.default_rng(2)
+    monkeypatch.setattr(terrain, "slope",
+                        lambda *a, **k: real(*a, **k) + noise.normal(0, 1e-3, size=grid.shape))
+    assert check_v6_reproducibility(config, roi).status == "fail"
+
+
+def _gsi_like_dem(shape, seed=3):
+    """Terrain quantised at 1 cm like the GSI source heights."""
+    rng = np.random.default_rng(seed)
+    rows, cols = np.mgrid[0:shape[0], 0:shape[1]]
+    surface = 150.0 + 0.8 * rows + 0.3 * cols + rng.normal(0, 2.0, size=shape)
+    return np.round(surface, 2).astype(np.float32)
+
+
+def test_results_digest_is_immune_to_last_bit_differences(scene):
+    """Regression: the digest hashed raw float bytes, so the macOS and Linux
+    results of the same run never matched. A different machine's resampling or
+    maths library shows up as last-bit noise; the digest must not see it."""
+    from rokko_geofusion.validation import results_digest
+
+    config, roi = scene
+    dem = _gsi_like_dem(roi.grid(config.lidar.resolution_m).shape)
+    reference, _ = results_digest(config, roi, dem)
+    for seed in range(10):
+        rng = np.random.default_rng(seed)
+        towards = np.where(rng.random(dem.shape) < 0.5, -np.inf, np.inf).astype(np.float32)
+        noisy = dem.copy()
+        for _ in range(4):
+            noisy = np.nextafter(noisy, towards)
+        assert results_digest(config, roi, noisy)[0] == reference
+
+
+def test_results_digest_detects_real_changes(scene):
+    from rokko_geofusion.validation import results_digest
+
+    config, roi = scene
+    dem = _gsi_like_dem(roi.grid(config.lidar.resolution_m).shape)
+    reference, _ = results_digest(config, roi, dem)
+    assert results_digest(config, roi, dem + np.float32(0.01))[0] != reference
+    changed = dem.copy()
+    changed[: changed.shape[0] // 3] += 2.0
+    assert results_digest(config, roi, changed)[0] != reference
+    config.terrain.relief_window_cells = 7
+    assert results_digest(config, roi, dem)[0] != reference
+
+
+def test_results_digest_only_matches_runs_of_the_same_configuration(scene):
+    """Equal terrain under a different configuration is not the same result."""
+    from rokko_geofusion.validation import results_digest
+
+    config, roi = scene
+    dem = _gsi_like_dem(roi.grid(config.lidar.resolution_m).shape)
+    reference, _ = results_digest(config, roi, dem)
+    config.fusion.thresholds.building_min_height_m += 0.5   # does not touch terrain
+    assert results_digest(config, roi, dem)[0] != reference
+
+
+def test_results_digest_does_not_depend_on_the_sign_of_zero(scene):
+    from rokko_geofusion.validation import results_digest
+
+    config, roi = scene
+    # A mean of -0.0001 m rounds to -0.0, which JSON would write as "-0.0" on
+    # one machine and "0.0" on another whose mean came out at +0.0001.
+    shape = roi.grid(config.lidar.resolution_m).shape
+    below = np.full(shape, -0.0001, np.float32)
+    above = np.full(shape, 0.0001, np.float32)
+    digest_below, inputs = results_digest(config, roi, below)
+    assert "-0.0" not in json.dumps(inputs)
+    assert digest_below == results_digest(config, roi, above)[0]
 
 
 def test_run_all_reports_every_check(scene):
